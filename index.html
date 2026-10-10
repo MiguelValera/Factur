@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Facturas</title>
+  <meta name="description" content="Facturación sin conexión para un negocio pequeño">
+  <meta name="theme-color" content="#F7F8F6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#15171B" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Facturas">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/facturas">Facturas</a>
+    <nav class="tabs" aria-label="Secciones">
+      <a href="#/facturas" data-tab="facturas">Facturas</a>
+      <a href="#/clientes" data-tab="clientes">Clientes</a>
+      <a href="#/ajustes" data-tab="ajustes">Ajustes</a>
+    </nav>
+  </header>
+
+  <main id="app" tabindex="-1"></main>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div id="print-area" aria-hidden="true"></div>
+
+  <noscript>Esta aplicación necesita JavaScript activado.</noscript>
+  <script src="app.js"></script>
+</body>
+</html>
