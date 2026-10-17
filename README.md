@@ -30,6 +30,24 @@ Ajustes → Exportar copia genera un archivo JSON con todo. Guárdalo en Google 
 - **Pasar clientes a otro dispositivo:** importa allí la copia. Se suman sin duplicar.
 - **Si se rompe un dispositivo:** en el nuevo, importa la última copia y acepta usar la misma serie para seguir la numeración.
 
+## Guardado automático en Google Drive (opcional)
+
+Con esto, la app guarda los datos sola en el Google Drive de la cuenta que se conecte, y todos los dispositivos conectados a esa cuenta comparten clientes y facturas. No hay servidor: los datos van directamente del dispositivo al Drive.
+
+Configuración (una sola vez, mejor desde un ordenador o con Safari en modo escritorio):
+
+1. Entra en https://console.cloud.google.com y crea un proyecto, por ejemplo "Facturas".
+2. APIs y servicios → Biblioteca → busca **Google Drive API** → Habilitar.
+3. Google Auth Platform (pantalla de consentimiento): tipo **Externo**, nombre "Facturas" y tu email de contacto.
+   - En **Acceso a datos**, añade el permiso `https://www.googleapis.com/auth/drive.file`. Es el más limitado: la app solo puede ver los archivos que ella misma crea, nunca el resto del Drive.
+   - En **Público**, añade como usuario de prueba la cuenta de Google que vaya a usar la app, o pulsa "Publicar app". Con este permiso Google no exige revisión.
+4. **Clientes** → Crear cliente → tipo **Aplicación web**. En "Orígenes de JavaScript autorizados" añade `https://miguelvalera.github.io` (sin barra ni carpeta al final). Copia el **ID de cliente**.
+5. En `app.js`, pega ese ID en `const GOOGLE_CLIENT_ID = '';`, cambia la `VERSION` de `sw.js` y sube los dos archivos.
+
+El ID de cliente no es secreto: identifica la app ante Google pero no da acceso a ningún dato.
+
+Uso: Ajustes → Conectar con Google. El permiso de Google dura una hora; mientras está vigente, cada factura emitida o cliente guardado se sube solo. Cuando caduca, la pantalla de facturas muestra un botón "Sincronizar" que lo renueva con un toque. El archivo en Drive se llama "Facturas - datos (no borrar).json".
+
 ## Actualizar la app
 
 Tras cambiar código, sube también `sw.js` con `VERSION` cambiada (por ejemplo `facturas-v1.0.1`). Los dispositivos mostrarán "Hay una versión nueva" con un botón para actualizar.

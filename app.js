@@ -1,6 +1,13 @@
 'use strict';
 
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.2.0';
+
+// Google Drive: pega aquí el ID de cliente OAuth de tu proyecto de Google Cloud (ver README).
+// No es secreto: identifica la app ante Google, pero no da acceso a ningún dato.
+const GOOGLE_CLIENT_ID = '';
+const NUBE_SCOPE = 'https://www.googleapis.com/auth/drive.file'; // solo ve los archivos que crea esta app
+const NUBE_NOMBRE = 'Facturas - datos (no borrar).json';
+const GAPI = 'https://www.googleapis.com';
 const FORMATO_COPIA = 'facturas-offline';
 const IVA_TIPOS = [21, 10, 4, 0];
 
@@ -45,6 +52,11 @@ const DB = (() => {
 
 const getAjuste = async clave => (await DB.get('ajustes', clave))?.valor;
 const setAjuste = (clave, valor) => DB.put('ajustes', { clave, valor });
+async function marcarEliminado(id) {
+  const e = (await getAjuste('eliminados')) || {};
+  e[id] = new Date().toISOString();
+  await setAjuste('eliminados', e);
+}
 
 /* ============================================================
    Utilidades
@@ -63,6 +75,7 @@ const fmtEur = new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EU
 const fmtPrecio = new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 4 });
 const fmtNum = new Intl.NumberFormat('es-ES', { maximumFractionDigits: 4 });
 const fmtFecha = new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'long', year: 'numeric' });
+const fmtFechaHora = new Intl.DateTimeFormat('es-ES', { dateStyle: 'medium', timeStyle: 'short' });
 const eur = cents => fmtEur.format(cents / 100);
 const fecha = iso => iso ? fmtFecha.format(new Date(iso.slice(0, 10) + 'T12:00:00')) : '';
 
@@ -279,8 +292,10 @@ async function cambiosSinCopia() {
 }
 
 async function vistaFacturas() {
-  const [facturas, clientes, emisor, disp, sinCopia] = await Promise.all([
-    DB.all('facturas'), DB.all('clientes'), getAjuste('emisor'), getAjuste('dispositivo'), cambiosSinCopia()]);
+  const [facturas, clientes, emisor, disp, sinCopia, nube] = await Promise.all([
+    DB.all('facturas'), DB.all('clientes'), getAjuste('emisor'), getAjuste('dispositivo'), cambiosSinCopia(), getAjuste('nube')]);
+  const enDrive = Nube.configurada() && nube?.email;
+  if (enDrive) Nube.prepararCliente().catch(() => {});
   const cli = new Map(clientes.map(c => [c.id, c]));
   const borradores = facturas.filter(f => f.estado === 'borrador').sort((a, b) => (b.actualizado || '').localeCompare(a.actualizado || ''));
   const emitidas = facturas.filter(f => f.estado === 'emitida').sort((a, b) => b.fecha.localeCompare(a.fecha) || b.codigo.localeCompare(a.codigo));
@@ -299,7 +314,8 @@ async function vistaFacturas() {
 
   app.innerHTML = `
     ${!listo ? `<div class="notice">Antes de facturar, rellena tus datos de facturador y elige la serie de este dispositivo.<br><a class="btn primary" href="#/ajustes">Ir a ajustes</a></div>` : ''}
-    ${listo && sinCopia ? `<div class="notice">Hay cambios que aún no están en ninguna copia de seguridad.<br><button type="button" class="primary" id="copiar">Exportar copia</button></div>` : ''}
+    ${listo && sinCopia && enDrive ? `<div class="notice">Hay cambios sin guardar en Google Drive.<br><button type="button" class="primary" id="sincronizar">Sincronizar</button></div>` : ''}
+    ${listo && sinCopia && !enDrive ? `<div class="notice">Hay cambios que aún no están en ninguna copia de seguridad.<br><button type="button" class="primary" id="copiar">Exportar copia</button></div>` : ''}
     <div class="head-row"><h1>Facturas</h1>
       ${listo ? `<a class="btn primary" href="#/factura/nueva">Nueva factura</a>` : ''}</div>
     ${disp ? `<p class="muted small">Este dispositivo emite con la serie ${esc(disp.serie)}.</p>` : ''}
@@ -309,6 +325,12 @@ async function vistaFacturas() {
     ${emitidas.length ? `<ul class="list">${emitidas.map(item).join('')}</ul>` : `<p class="empty">Todavía no has emitido ninguna factura.</p>`}`;
 
   $('#copiar')?.addEventListener('click', exportarCopia);
+  $('#sincronizar')?.addEventListener('click', e => {
+    e.target.disabled = true; e.target.textContent = 'Sincronizando…';
+    Nube.sincronizarConToque()
+      .then(r => { toast(r.repetidos.length ? `Atención: el número ${r.repetidos[0]} está repetido. Revisa las series.` : 'Guardado en Google Drive'); router(); })
+      .catch(err => { toast(err.message); e.target.disabled = false; e.target.textContent = 'Sincronizar'; });
+  });
   $('#buscar')?.addEventListener('input', e => {
     const q = e.target.value.trim().toLowerCase();
     $$('a.item', app).forEach(a => { a.parentElement.hidden = q && !a.dataset.buscar.includes(q); });
@@ -529,6 +551,8 @@ async function editorBorrador(f) {
     if (!confirm('¿Eliminar este borrador? No se puede deshacer.')) return;
     clearTimeout(timer); guardarPendiente = null;
     await DB.del('facturas', f.id);
+    await marcarEliminado(f.id);
+    Nube.programar();
     location.hash = '#/facturas';
   };
   $('#emitir').onclick = async () => {
@@ -584,6 +608,7 @@ async function emitir(f) {
   g.hash = await sha256(canon(contenidoHash(g)));
   g.actualizado = g.emitidaEn;
   await DB.put('facturas', g);
+  Nube.programar();
   sessionStorage.setItem('recienEmitida', g.id);
   toast(`Factura ${codigo} emitida`);
   router();
@@ -656,6 +681,7 @@ async function vistaCliente(id, params) {
     if (!r.ok && !confirm(`${r.msg} ¿Guardar de todas formas?`)) return;
     c.creado ||= ahora(); c.actualizado = ahora();
     await DB.put('clientes', c);
+    Nube.programar();
     if (volver) {
       const f = await DB.get('facturas', volver);
       if (f && f.estado === 'borrador') { f.clienteId = c.id; f.actualizado = ahora(); await DB.put('facturas', f); }
@@ -668,13 +694,15 @@ async function vistaCliente(id, params) {
   $('#borrar')?.addEventListener('click', async () => {
     if (!confirm(`¿Eliminar a ${c.nombre}?`)) return;
     await DB.del('clientes', c.id);
+    await marcarEliminado(c.id);
+    Nube.programar();
     location.hash = '#/clientes';
   });
 }
 
 async function vistaAjustes() {
-  const [emisor = {}, disp, ultima, persistente] = await Promise.all([
-    getAjuste('emisor'), getAjuste('dispositivo'), getAjuste('ultimaCopia'),
+  const [emisor = {}, disp, ultima, nube, facturas, persistente] = await Promise.all([
+    getAjuste('emisor'), getAjuste('dispositivo'), getAjuste('ultimaCopia'), getAjuste('nube'), DB.all('facturas'),
     navigator.storage?.persisted ? navigator.storage.persisted() : Promise.resolve(null)]);
   const campo = (k, etiqueta, extra = '') => `<div ${extra.includes('span-2') ? 'class="span-2"' : ''}><label for="e-${k}">${etiqueta}</label><input id="e-${k}" name="${k}" value="${esc(emisor[k])}" ${extra.replace('span-2', '')}></div>`;
 
@@ -688,6 +716,8 @@ async function vistaAjustes() {
         <input id="serie" name="serie" value="${esc(disp?.serie || '')}" maxlength="4" autocapitalize="characters" style="max-width:120px" aria-label="Serie" placeholder="M">
         <button type="submit" class="primary">Guardar serie</button>
       </div>
+      ${(() => { const usadas = [...new Set(facturas.filter(f => f.estado === 'emitida').map(f => f.serie))].sort();
+        return usadas.length ? `<p class="hint">Series que ya aparecen en las facturas: ${usadas.map(esc).join(', ')}.</p>` : ''; })()}
       <p class="hint">Si este dispositivo sustituye a uno roto, importa primero su copia y usa su misma serie para seguir la numeración.</p>
     </form>
 
@@ -709,7 +739,18 @@ async function vistaAjustes() {
       <p class="hint">Aparecen igual en todas las facturas nuevas. Las ya emitidas conservan los datos que tenían.</p>
     </form>
 
-    <h2>Copia de seguridad</h2>
+    ${Nube.configurada() ? `
+    <h2>Google Drive</h2>
+    ${nube?.email ? `
+      <p>Conectado con <strong>${esc(nube.email)}</strong>.${nube.ultimaSync ? ` Última sincronización: ${esc(fmtFechaHora.format(new Date(nube.ultimaSync)))}.` : ''}</p>
+      <p class="muted small">Los clientes y las facturas se guardan en el archivo «${esc(NUBE_NOMBRE)}» de tu Drive y se sincronizan entre todos los dispositivos conectados a esta cuenta. Cada dispositivo sigue usando su propia serie.</p>
+      <div class="row"><button type="button" class="primary" id="nube-sync">Sincronizar ahora</button><button type="button" id="nube-salir">Desconectar</button></div>`
+    : `
+      <p class="muted small">Conecta una cuenta de Google y los clientes y facturas se guardarán solos en su Google Drive, y aparecerán en todos los dispositivos que conectes con la misma cuenta. Los datos van directamente de este dispositivo a ese Drive, sin pasar por ningún otro sitio.</p>
+      <button type="button" class="primary" id="nube-conectar">Conectar con Google</button>`}
+    <div id="res-nube" class="small" style="margin-top:10px"></div>` : ''}
+
+    <h2>Copia de seguridad${Nube.configurada() ? ' manual' : ''}</h2>
     <p>${ultima ? `Última copia exportada el ${esc(fecha(ultima))}.` : 'Todavía no has exportado ninguna copia.'}</p>
     <p class="muted small">La copia es un archivo con todos los clientes y facturas. Guárdalo en Google Drive o iCloud. Para pasar datos a otro dispositivo, impórtalo allí: se suman sin duplicar nada.</p>
     <div class="row">
@@ -750,10 +791,30 @@ async function vistaAjustes() {
     d.nif = normNif(d.nif);
     d.iban = d.iban.toUpperCase().replace(/\s+/g, ' ');
     if (!d.nombre || !d.nif || !d.direccion) { toast('Nombre, NIF y dirección son obligatorios.'); return; }
+    d.actualizado = ahora();
     await setAjuste('emisor', d);
+    Nube.programar();
     toast('Datos guardados');
   };
   $('#exportar').onclick = exportarCopia;
+  if (Nube.configurada()) Nube.prepararCliente().catch(() => {});
+  const resNube = (promesa, boton) => {
+    const texto = boton.textContent; boton.disabled = true; boton.textContent = 'Conectando…';
+    promesa.then(r => {
+      toast(r.repetidos?.length ? `Atención: el número ${r.repetidos[0]} está repetido. Revisa las series.` : 'Sincronizado con Google Drive');
+      router();
+    }).catch(err => {
+      $('#res-nube').innerHTML = `<span class="badline">${esc(err.message)}</span>`;
+      boton.disabled = false; boton.textContent = texto;
+    });
+  };
+  $('#nube-conectar')?.addEventListener('click', e => resNube(Nube.conectar(), e.target));
+  $('#nube-sync')?.addEventListener('click', e => resNube(Nube.sincronizarConToque(), e.target));
+  $('#nube-salir')?.addEventListener('click', async () => {
+    if (!confirm('Este dispositivo dejará de sincronizar con Google Drive. Los datos se quedan aquí y en el Drive. ¿Desconectar?')) return;
+    await Nube.desconectar();
+    router();
+  });
   $('#importar').onchange = async e => {
     const file = e.target.files[0];
     e.target.value = '';
@@ -777,9 +838,15 @@ async function vistaAjustes() {
 /* ============================================================
    Copias de seguridad
    ============================================================ */
+async function datosCopia() {
+  const [emisor, disp, clientes, facturas, eliminados] = await Promise.all([
+    getAjuste('emisor'), getAjuste('dispositivo'), DB.all('clientes'), DB.all('facturas'), getAjuste('eliminados')]);
+  return { app: FORMATO_COPIA, formato: 1, version: APP_VERSION, exportado: ahora(), serieDispositivo: disp?.serie || '',
+    emisor: emisor || null, clientes, facturas, eliminados: eliminados || {} };
+}
 async function exportarCopia() {
-  const [emisor, disp, clientes, facturas] = await Promise.all([getAjuste('emisor'), getAjuste('dispositivo'), DB.all('clientes'), DB.all('facturas')]);
-  const datos = { app: FORMATO_COPIA, formato: 1, version: APP_VERSION, exportado: ahora(), serieDispositivo: disp?.serie || '', emisor: emisor || null, clientes, facturas };
+  const datos = await datosCopia();
+  const disp = await getAjuste('dispositivo');
   const nombre = `facturas-copia-${hoy()}-${disp?.serie || 'sin-serie'}.json`;
   const file = new File([JSON.stringify(datos, null, 1)], nombre, { type: 'application/json' });
   const tactil = matchMedia('(pointer: coarse)').matches;
@@ -807,21 +874,33 @@ function descargar(file) {
 async function importarCopia(file) {
   let d;
   try { d = JSON.parse(await file.text()); } catch { throw new Error('El archivo no es una copia válida.'); }
+  const r = await fusionar(d, true);
+  Nube.programar();
+  return r.html;
+}
+
+// Mezcla una copia con los datos de este dispositivo sin duplicar nada.
+// interactivo = true cuando la importa una persona (puede preguntar); false al sincronizar solo.
+async function fusionar(d, interactivo) {
   if (d?.app !== FORMATO_COPIA || !Array.isArray(d.clientes) || !Array.isArray(d.facturas)) throw new Error('El archivo no es una copia de esta app.');
 
-  const [locClientes, locFacturas, emisor, disp] = await Promise.all([DB.all('clientes'), DB.all('facturas'), getAjuste('emisor'), getAjuste('dispositivo')]);
+  const [locClientes, locFacturas, emisor, disp, locElim] = await Promise.all([
+    DB.all('clientes'), DB.all('facturas'), getAjuste('emisor'), getAjuste('dispositivo'), getAjuste('eliminados')]);
+  const remElim = d.eliminados || {};
+  const eliminados = { ...(locElim || {}), ...remElim };
   const locC = new Map(locClientes.map(c => [c.id, c]));
   const locF = new Map(locFacturas.map(f => [f.id, f]));
   const putC = [], putF = [], conflictos = [];
   let nC = 0, aC = 0, nF = 0, aF = 0;
 
   for (const c of d.clientes) {
-    if (!c?.id || !c.nombre) continue;
+    if (!c?.id || !c.nombre || eliminados[c.id]) continue;
     const l = locC.get(c.id);
     if (!l) { putC.push(c); nC++; } else if ((c.actualizado || '') > (l.actualizado || '')) { putC.push(c); aC++; }
   }
   for (const f of d.facturas) {
     if (!f?.id || !Array.isArray(f.lineas)) continue;
+    if (eliminados[f.id] && f.estado !== 'emitida') continue;
     const l = locF.get(f.id);
     if (!l) { putF.push(f); nF++; continue; }
     if (l.estado === 'borrador' && f.estado === 'emitida') { putF.push(f); aF++; }
@@ -829,8 +908,14 @@ async function importarCopia(file) {
     else if (l.estado === 'emitida' && f.estado === 'emitida' && l.hash !== f.hash) conflictos.push(l.codigo);
   }
 
-  // Números repetidos con facturas distintas: dos dispositivos con la misma serie
+  // Lo que se eliminó en otro dispositivo: borradores y clientes sin facturas
   const final = new Map(locF); putF.forEach(f => final.set(f.id, f));
+  const conFacturas = new Set([...final.values()].filter(f => f.estado === 'emitida').map(f => f.clienteId));
+  const borrarF = locFacturas.filter(f => remElim[f.id] && f.estado === 'borrador').map(f => f.id);
+  const borrarC = locClientes.filter(c => remElim[c.id] && !conFacturas.has(c.id)).map(c => c.id);
+  borrarF.forEach(id => final.delete(id));
+
+  // Números repetidos con facturas distintas: dos dispositivos con la misma serie
   const porCodigo = new Map(), repetidos = new Set();
   for (const f of final.values()) {
     if (f.estado !== 'emitida') continue;
@@ -839,21 +924,164 @@ async function importarCopia(file) {
   }
 
   if (d.emisor) {
+    const sinFecha = o => { const { actualizado, ...r } = o || {}; return canon(r); };
     if (!emisor) await setAjuste('emisor', d.emisor);
-    else if (canon(emisor) !== canon(d.emisor) && confirm('La copia trae datos de facturador distintos a los de este dispositivo. ¿Usar los de la copia?')) await setAjuste('emisor', d.emisor);
+    else if (sinFecha(emisor) !== sinFecha(d.emisor)) {
+      if (interactivo) {
+        if (confirm('La copia trae datos de facturador distintos a los de este dispositivo. ¿Usar los de la copia?')) await setAjuste('emisor', d.emisor);
+      } else if ((d.emisor.actualizado || '') > (emisor.actualizado || '')) await setAjuste('emisor', d.emisor);
+    }
   }
-  if (!disp && d.serieDispositivo && confirm(`¿Este dispositivo sustituye al que usaba la serie ${d.serieDispositivo}? Si aceptas, seguirá su numeración. Si es un dispositivo adicional, cancela y elige otra serie.`)) {
+  if (interactivo && !disp && d.serieDispositivo && confirm(`¿Este dispositivo sustituye al que usaba la serie ${d.serieDispositivo}? Si aceptas, seguirá su numeración. Si es un dispositivo adicional, cancela y elige otra serie.`)) {
     await setAjuste('dispositivo', { serie: d.serieDispositivo, desde: ahora() });
   }
 
+  if (canon(eliminados) !== canon(locElim || {})) await setAjuste('eliminados', eliminados);
   await DB.putMany({ clientes: putC, facturas: putF });
-  const lineas = [
+  for (const id of borrarF) await DB.del('facturas', id);
+  for (const id of borrarC) await DB.del('clientes', id);
+
+  const html = [
     `<div class="okline">Importado: ${nC} clientes nuevos, ${aC} actualizados, ${nF} facturas nuevas, ${aF} actualizadas.</div>`,
     ...conflictos.map(c => `<div class="badline">La factura ${esc(c)} es distinta en la copia y en este dispositivo. Se ha mantenido la de este dispositivo.</div>`),
     ...[...repetidos].map(c => `<div class="badline">El número ${esc(c)} aparece en dos facturas distintas. Revisa que cada dispositivo tenga su propia serie.</div>`),
-  ];
-  return lineas.join('');
+  ].join('');
+  return { html, cambios: nC + aC + nF + aF + borrarF.length + borrarC.length, repetidos: [...repetidos] };
 }
+
+/* ============================================================
+   Google Drive: los datos van del dispositivo al Drive del usuario, sin servidor intermedio
+   ============================================================ */
+const Nube = (() => {
+  let cliente = null, esperando = null, enCurso = null, timer = null, hint = '';
+  const configurada = () => !!GOOGLE_CLIENT_ID;
+
+  // El permiso de Google dura una hora y se queda solo en este dispositivo
+  const leerToken = () => {
+    try { const t = JSON.parse(localStorage.getItem('nube-token') || 'null'); return t && t.expira > Date.now() + 60000 ? t.token : null; } catch { return null; }
+  };
+  const guardarToken = (token, seg) => { try { localStorage.setItem('nube-token', JSON.stringify({ token, expira: Date.now() + seg * 1000 })); } catch {} };
+  const borrarToken = () => { try { localStorage.removeItem('nube-token'); } catch {} };
+
+  function cargarGis() {
+    if (window.google?.accounts?.oauth2) return Promise.resolve();
+    return new Promise((res, rej) => {
+      const sc = document.createElement('script');
+      sc.src = 'https://accounts.google.com/gsi/client'; sc.async = true;
+      sc.onload = res; sc.onerror = () => { sc.remove(); rej(new Error('No se pudo contactar con Google. ¿Hay conexión?')); };
+      document.head.append(sc);
+    });
+  }
+  async function prepararCliente() {
+    if (!configurada() || cliente) return;
+    await cargarGis();
+    cliente = google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: NUBE_SCOPE,
+      callback: r => {
+        const p = esperando; esperando = null;
+        if (r.error) p?.rej(new Error('Google no ha dado permiso.'));
+        else { guardarToken(r.access_token, Number(r.expires_in) || 3600); p?.res(r.access_token); }
+      },
+      error_callback: e => {
+        const p = esperando; esperando = null;
+        p?.rej(new Error(e?.type === 'popup_closed' ? 'Se cerró la ventana de Google antes de terminar.' : 'No se pudo abrir la ventana de Google.'));
+      },
+    });
+  }
+  // Tiene que llamarse en el mismo toque del usuario: si no, Safari bloquea la ventana de Google
+  function pedirToken(primeraVez) {
+    return new Promise((res, rej) => {
+      if (!cliente) { rej(new Error('Preparando el acceso a Google. Vuelve a tocar en un momento.')); prepararCliente().catch(() => {}); return; }
+      esperando = { res, rej };
+      cliente.requestAccessToken({ prompt: primeraVez ? 'consent' : '', ...(hint ? { login_hint: hint } : {}) });
+    });
+  }
+
+  async function api(token, url, opts = {}) {
+    const r = await fetch(url, { ...opts, headers: { Authorization: 'Bearer ' + token, ...(opts.headers || {}) } });
+    if (r.status === 401) { borrarToken(); throw Object.assign(new Error('El permiso de Google ha caducado. Toca «Sincronizar» para renovarlo.'), { caducado: true }); }
+    if (!r.ok) throw Object.assign(new Error(`Google Drive ha respondido con un error (${r.status}).`), { status: r.status });
+    return r;
+  }
+
+  async function sincronizar(token = leerToken()) {
+    if (enCurso) return enCurso;
+    enCurso = (async () => {
+      if (!token) throw Object.assign(new Error('Toca «Sincronizar» para renovar el permiso de Google.'), { caducado: true });
+      const est = (await getAjuste('nube')) || {};
+      let id = est.fileId || null, remoto = null;
+      if (id) {
+        try { remoto = await (await api(token, `${GAPI}/drive/v3/files/${id}?alt=media`)).json(); }
+        catch (e) { if (e.status === 404) id = null; else throw e; }
+      }
+      if (!id) {
+        const q = encodeURIComponent(`name = '${NUBE_NOMBRE}' and trashed = false`);
+        const l = await (await api(token, `${GAPI}/drive/v3/files?q=${q}&orderBy=modifiedTime desc&fields=files(id)&spaces=drive`)).json();
+        id = l.files?.[0]?.id || null;
+        if (id) remoto = await (await api(token, `${GAPI}/drive/v3/files/${id}?alt=media`)).json();
+      }
+      const resultado = remoto ? await fusionar(remoto, false) : { cambios: 0, repetidos: [] };
+      const marca = ahora(); // lo cambiado después de este momento quedará pendiente para la próxima vez
+      const cuerpo = JSON.stringify(await datosCopia());
+      if (id) {
+        await api(token, `${GAPI}/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: cuerpo });
+      } else {
+        const b = 'facturas' + uuid().replace(/-/g, '');
+        const meta = JSON.stringify({ name: NUBE_NOMBRE, mimeType: 'application/json' });
+        const body = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${b}\r\nContent-Type: application/json\r\n\r\n${cuerpo}\r\n--${b}--`;
+        id = (await (await api(token, `${GAPI}/upload/drive/v3/files?uploadType=multipart&fields=id`, {
+          method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${b}` }, body })).json()).id;
+      }
+      await setAjuste('nube', { ...est, fileId: id, ultimaSync: marca });
+      await setAjuste('ultimaCopia', marca);
+      return resultado;
+    })();
+    try { return await enCurso; } finally { enCurso = null; }
+  }
+
+  async function conectar() { // desde un toque
+    const token = await pedirToken(true);
+    const u = (await (await api(token, `${GAPI}/drive/v3/about?fields=user(emailAddress,displayName)`)).json()).user || {};
+    hint = u.emailAddress || '';
+    await setAjuste('nube', { ...((await getAjuste('nube')) || {}), email: u.emailAddress || 'tu cuenta de Google', nombre: u.displayName || '' });
+    return sincronizar(token);
+  }
+  async function sincronizarConToque() { // desde un toque
+    const token = leerToken() || await pedirToken(false);
+    return sincronizar(token);
+  }
+  async function desconectar() {
+    const t = leerToken();
+    if (t && window.google?.accounts?.oauth2) google.accounts.oauth2.revoke(t, () => {});
+    borrarToken();
+    await setAjuste('nube', null);
+  }
+
+  const enLista = () => ['', '#/facturas', '#/clientes'].includes(location.hash);
+  // Tras un cambio local: si hay permiso vigente y conexión, sube en segundo plano
+  function programar() {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      if (!leerToken() || !navigator.onLine || !(await getAjuste('nube'))?.email) return;
+      try { await sincronizar(); if (enLista()) router(); } catch (e) { console.warn(e); }
+    }, 1500);
+  }
+  async function iniciar() {
+    if (!configurada()) return;
+    const est = await getAjuste('nube');
+    if (!est?.email) return;
+    hint = est.email.includes('@') ? est.email : '';
+    if (!navigator.onLine) return;
+    try { await prepararCliente(); } catch { return; }
+    if (leerToken()) {
+      try { const r = await sincronizar(); if (r.cambios && enLista()) router(); } catch (e) { console.warn(e); }
+    }
+  }
+  window.addEventListener('online', iniciar);
+
+  return { configurada, conectar, sincronizarConToque, desconectar, programar, iniciar, prepararCliente, tienePermiso: () => !!leerToken() };
+})();
 
 /* ============================================================
    Navegación
@@ -892,6 +1120,7 @@ if (!window.isSecureContext || !crypto.subtle) {
 } else {
   navigator.storage?.persist?.().catch(() => {});
   router();
+  Nube.iniciar();
 }
 
 /* ============================================================
