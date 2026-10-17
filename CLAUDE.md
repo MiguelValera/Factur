@@ -27,11 +27,11 @@ Verifactu: la base técnica (inmutabilidad y huella encadenada) está hecha, per
 - A mano: `python3 -m http.server` y abrir http://localhost:8000. La app exige https o localhost.
 - `.gitignore` excluye todos los `*.json` para que nunca se suba una copia de seguridad.
 
-## Estado actual (v1.2.0)
+## Estado actual (v1.2.1)
 Hecho: clientes con validación de DNI, NIE y CIF; facturas con IVA 21, 10, 4 y 0 % y retención IRPF opcional; datos adicionales (matrícula…); rectificativas; impresión y PDF; serie por dispositivo; copia manual exportar/importar; sincronización con Google Drive; funcionamiento sin conexión con aviso de nueva versión.
 
 ## Pendiente
-1. **ID de cliente de Google.** Miguel está creando el proyecto en Google Cloud (pasos en el README). Cuando lo pase, ponlo en `GOOGLE_CLIENT_ID`, sube la versión y publica.
+1. **ID de cliente de Google.** Hecho en v1.2.1 (`GOOGLE_CLIENT_ID` en `app.js`, origen autorizado `https://miguelvalera.github.io`).
 2. **Probar el login de Google en el iPhone**, con la app instalada en la pantalla de inicio. Ahora usa la ventana emergente de Google Identity Services. Si falla en ese modo, cambiar a OAuth por redirección: `response_type=token`, `redirect_uri` igual a la URL de la app, y leer `access_token` del hash antes de arrancar el router, que también usa el hash.
 3. **Verifactu.** Decidir con el gestor antes de la fecha obligatoria (1 de enero de 2027 para sociedades, 1 de julio de 2027 para autónomos). Las opciones son completar la app (QR, firma, eventos, declaración responsable) o pasar a un software ya certificado.
 

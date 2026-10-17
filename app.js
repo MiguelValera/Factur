@@ -1,10 +1,10 @@
 'use strict';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 
 // Google Drive: pega aquí el ID de cliente OAuth de tu proyecto de Google Cloud (ver README).
 // No es secreto: identifica la app ante Google, pero no da acceso a ningún dato.
-const GOOGLE_CLIENT_ID = '';
+const GOOGLE_CLIENT_ID = '1090950721739-uikb3jcqjfrj9qvvf0t8r8rggdltipvu.apps.googleusercontent.com';
 const NUBE_SCOPE = 'https://www.googleapis.com/auth/drive.file'; // solo ve los archivos que crea esta app
 const NUBE_NOMBRE = 'Facturas - datos (no borrar).json';
 const GAPI = 'https://www.googleapis.com';
