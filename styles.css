@@ -262,8 +262,13 @@ fieldset { border: 0; padding: 0; margin: 0; }
   .topbar, .tabs, main, #toast, .modal { display: none !important; }
   #print-area { display: block; }
   #print-area .doc {
-    /* Una hoja A4 como mínimo, para que los totales queden abajo aunque haya pocas líneas */
-    min-height: 296mm; padding: 16mm 16mm 14mm; margin: 0;
+    /* Alto mínimo para que los totales queden abajo aunque haya pocas líneas. No usar 297mm ni vh:
+       Safari deja menos alto útil que Chrome (y en Safari vh es la ventana, no la hoja), y la factura
+       pasaría a dos hojas. Probado con WebKit y Chromium, A4 y Carta, con distintos márgenes: cabe hasta
+       unos 270mm; 255mm deja holgura para la cabecera y el pie que añaden algunos navegadores. */
+    min-height: 255mm; padding: 16mm 16mm 14mm; margin: 0;
+    /* Si la factura ocupa varias hojas, cada una lleva su margen arriba y abajo */
+    box-decoration-break: clone; -webkit-box-decoration-break: clone;
     border: 0; border-radius: 0; font-size: 11pt; color: #000; background: #fff;
   }
   #print-area .doc * { color: #000 !important; border-color: #000; }

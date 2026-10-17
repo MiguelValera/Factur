@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.4.2';
+const APP_VERSION = '1.4.3';
 
 // Google Drive: pega aquí el ID de cliente OAuth de tu proyecto de Google Cloud (ver README).
 // No es secreto: identifica la app ante Google, pero no da acceso a ningún dato.

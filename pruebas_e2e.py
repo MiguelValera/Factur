@@ -78,6 +78,73 @@ def verificar(pg, U):
     pg.goto(U + '#/ajustes'); pg.wait_for_selector('#verificar'); pg.click('#verificar'); pg.wait_for_timeout(500)
     return pg.inner_text('#res-verif')
 
+# Imprime un HTML a PDF con WebKit, el motor de Safari (solo en un Mac con swiftc)
+IMPRIMIR_WEBKIT = r"""
+import AppKit
+import WebKit
+let a = CommandLine.arguments
+let entrada = URL(fileURLWithPath: a[1]), salida = URL(fileURLWithPath: a[2])
+class D: NSObject, WKNavigationDelegate {
+  func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+      let i = NSPrintInfo()
+      i.paperSize = NSSize(width: 595.28, height: 841.89)
+      for m in [\NSPrintInfo.topMargin, \NSPrintInfo.bottomMargin, \NSPrintInfo.leftMargin, \NSPrintInfo.rightMargin] { i[keyPath: m] = 18 }
+      i.jobDisposition = .save
+      i.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = salida
+      let op = w.printOperation(with: i)
+      op.showsPrintPanel = false; op.showsProgressPanel = false
+      op.view?.frame = NSRect(x: 0, y: 0, width: 800, height: 1000)
+      op.runModal(for: NSWindow(), delegate: nil, didRun: nil, contextInfo: nil)
+      DispatchQueue.main.asyncAfter(deadline: .now() + 2) { NSApp.terminate(nil) }
+    }
+  }
+}
+NSApplication.shared.setActivationPolicy(.prohibited)
+let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 1000))
+let d = D(); web.navigationDelegate = d
+web.loadFileURL(entrada, allowingReadAccessTo: URL(fileURLWithPath: "/"))
+NSApplication.shared.run()
+"""
+
+def paginas_pdf(ruta):
+    return len(re.findall(rb'/Type\s*/Page(?![a-zA-Z])', open(ruta, 'rb').read()))
+
+def comprobar_paginas(b, pg, U):
+    """Una factura corta debe salir en una hoja; una larga, en varias. En Chromium y, si se puede, en WebKit."""
+    import shutil, subprocess
+    tmp = tempfile.mkdtemp()
+    css = 'file://' + os.path.join(RAIZ, 'styles.css')
+    def factura(n):
+        pg.goto(U + '#/factura/nueva'); pg.wait_for_selector('#cliente'); pg.select_option('#cliente', index=1)
+        for i in range(n):
+            if i: pg.click('#anadir')
+            l = pg.query_selector_all('.line')[i]
+            l.query_selector('[data-f=concepto]').fill(f'Linea {i + 1}'); l.query_selector('[data-f=precio]').fill('10')
+        pg.wait_for_timeout(500); pg.click('#emitir'); pg.wait_for_selector('.stamp:not(.draft)')
+        ruta = os.path.join(tmp, f'f{n}.html')
+        open(ruta, 'w').write(f'<!doctype html><html lang="es"><head><meta charset="utf-8"><link rel="stylesheet" href="{css}"></head>'
+                              f'<body><div id="print-area">{pg.eval_on_selector("main .doc", "e => e.outerHTML")}</div></body></html>')
+        return ruta
+    casos = {'corta': (factura(2), 1), 'larga': (factura(40), 2)}
+    imp = b.new_page()
+    for nombre, (html, esperado) in casos.items():
+        imp.goto('file://' + html); imp.emulate_media(media='print')
+        pdf = os.path.join(tmp, f'chrome-{nombre}.pdf'); imp.pdf(path=pdf, prefer_css_page_size=True)
+        n = paginas_pdf(pdf)
+        assert (n == 1) if esperado == 1 else (n >= 2), f'Chromium, factura {nombre}: {n} páginas'
+    imp.close()
+    if not shutil.which('swiftc'):
+        print('   (sin swiftc: no se comprueba la impresión con WebKit)'); return
+    src = os.path.join(tmp, 'imprimir.swift'); exe = os.path.join(tmp, 'imprimir')
+    open(src, 'w').write(IMPRIMIR_WEBKIT)
+    subprocess.run(['swiftc', '-O', src, '-o', exe], check=True, capture_output=True)
+    for nombre, (html, esperado) in casos.items():
+        pdf = os.path.join(tmp, f'safari-{nombre}.pdf')
+        subprocess.run([exe, html, pdf], check=True, capture_output=True, timeout=60)
+        n = paginas_pdf(pdf)
+        assert (n == 1) if esperado == 1 else (n >= 2), f'WebKit (Safari), factura {nombre}: {n} páginas'
+
 def main():
     srv, U = servidor()
     errores = []
@@ -199,6 +266,9 @@ def main():
         assert n == 0, f'quedan {n} registros en el dispositivo'
         P.wait_for_selector('#entrar:not([disabled])'); P.click('#entrar'); P.wait_for_selector('#nube-sync')
         P.goto(U + '#/clientes'); P.wait_for_selector('text=Cliente Sin Sesion')
+
+        print('11. Al imprimir, una factura corta ocupa una hoja (Chromium y Safari)')
+        comprobar_paginas(b, P, U)
 
         b.close()
     srv.shutdown()
