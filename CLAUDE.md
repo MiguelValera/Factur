@@ -23,15 +23,22 @@ PWA de facturación para el taller mecánico familiar. Funciona sin conexión en
 - Las copias se mezclan por UUID (`fusionar`). Las eliminaciones se registran en el ajuste `eliminados`.
 - **Sesión de Google obligatoria**: sin cuenta conectada y permiso vigente, el router solo muestra `vistaEntrar`. Los datos viven en Google Drive (archivo «Facturas - datos (no borrar).json») y IndexedDB es la copia local. Google Identity Services con modelo de token y permiso `drive.file`, sin servidor. El permiso dura 1 hora: al caducar se vuelve a la pantalla de entrar y se renueva con un toque. Al entrar con otra cuenta se vacían los datos locales. `GOOGLE_CLIENT_ID` está al principio de `app.js`.
 
+## Seguridad
+- `index.html` lleva una Content-Security-Policy: solo scripts propios y de `accounts.google.com/gsi/`, conexiones a `www.googleapis.com`. Nada de manejadores en línea (`onclick="…"`); si se añade otro servicio externo, hay que permitirlo ahí.
+- Todo lo que se pinta con `innerHTML` pasa por `esc()`, también los identificadores. Lo que llega de una copia o de Drive se valida en `fusionar` (`documentoOk`, `idOk`) y lo que no cumple se descarta.
+- Cerrar sesión borra los datos del dispositivo (`DB.vaciar`); siguen en Drive.
+- La app comparte origen con cualquier otro repo publicado en `miguelvalera.github.io` sin dominio propio: ese sitio podría leer los datos y el permiso de Google. No publicar otras páginas ahí sin dominio propio.
+- Los commits usan el email noreply de GitHub (configurado en este repositorio).
+
 ## Legal
 Verifactu: la base técnica (inmutabilidad y huella encadenada) está hecha, pero no cumple el reglamento completo. Faltan el QR de la AEAT, la firma de registros, el registro de eventos y la declaración responsable. No afirmar cumplimiento.
 
 ## Probar
-- Pruebas completas: `pip install playwright && playwright install chromium`, y después `python3 pruebas_e2e.py`. Simulan la pantalla de entrar, la ventana de sesión caducada, los presupuestos, dos dispositivos con la misma cuenta, el cambio de cuenta, la copia manual y Google Drive (Google simulado, sin llamadas reales). Ejecútalas antes de cada push.
+- Pruebas completas: `pip install playwright && playwright install chromium`, y después `python3 pruebas_e2e.py`. Simulan la pantalla de entrar, una copia manipulada, cerrar sesión, la CSP, la ventana de sesión caducada, los presupuestos, dos dispositivos con la misma cuenta, el cambio de cuenta, la copia manual y Google Drive (Google simulado, sin llamadas reales). Ejecútalas antes de cada push.
 - A mano: `python3 -m http.server` y abrir http://localhost:8000. La app exige https o localhost.
 - `.gitignore` excluye todos los `*.json` para que nunca se suba una copia de seguridad.
 
-## Estado actual (v1.4.0)
+## Estado actual (v1.4.1)
 Hecho: clientes con validación de DNI, NIE y CIF; facturas con IVA 21, 10, 4 y 0 % y retención IRPF opcional; datos adicionales (matrícula…); rectificativas; impresión y PDF; serie única para todos los dispositivos; entrar con Google obligatorio y datos en Google Drive; presupuestos; guardado en Drive tras cada cambio con aviso «Guardado ✓»; copia manual exportar/importar; aviso de nueva versión; interfaz con letra y botones grandes pensada para personas mayores.
 
 ## Pendiente
