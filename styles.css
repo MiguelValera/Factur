@@ -160,39 +160,65 @@ fieldset { border: 0; padding: 0; margin: 0; }
   display: grid; gap: 12px;
   grid-template-columns: 1fr 1fr 1fr;
   grid-template-areas: "c c c" "q p i" "b b x";
+  align-items: end; /* aunque una etiqueta ocupe dos líneas, los campos quedan alineados */
   padding: 16px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface);
 }
 .line .c { grid-area: c; } .line .q { grid-area: q; } .line .p { grid-area: p; } .line .i { grid-area: i; }
-.line .b { grid-area: b; align-self: center; } .line .x { grid-area: x; justify-self: end; }
+.line .b { grid-area: b; align-self: center; line-height: 1.4; } .line .x { grid-area: x; justify-self: end; }
 @media (min-width: 700px) {
   .line { grid-template-columns: 1fr 1fr 1fr 1fr; grid-template-areas: "c c c c" "q p i b" ". . . x"; align-items: end; }
-  .line .b { align-self: end; padding-bottom: 14px; font-weight: 600; }
+  .line .b { align-self: end; padding-bottom: 6px; }
 }
 .line label { font-size: .95rem; }
 
 /* Documento: factura en pantalla y en papel */
 .doc {
   position: relative;
+  display: flex; flex-direction: column;
   background: var(--surface); border: 1px solid var(--rule); border-radius: 4px;
-  padding: 24px 20px; margin: 16px 0;
+  padding: 28px 22px; margin: 16px 0;
   font-family: var(--doc); font-size: 16px; line-height: 1.5;
 }
+.doc b { font-weight: 700; }
 .doc-head { padding-right: 110px; }
-.doc-title { font-size: 1.5rem; font-weight: 600; margin: 0 0 4px; }
-.doc-parties { display: grid; gap: 16px; grid-template-columns: 1fr; margin: 20px 0; }
+.doc-title {
+  display: inline-block; margin: 0 0 10px; padding-bottom: 4px;
+  font-size: 1.9rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+  border-bottom: 3px solid var(--text);
+}
+.doc-codigo { font-size: 1.1rem; }
+.doc-parties { display: grid; gap: 20px; grid-template-columns: 1fr; margin: 24px 0; }
 @media (min-width: 560px) { .doc-parties { grid-template-columns: 1fr 1fr; } }
-.doc-parties h3 { font: 600 .8rem/1.2 var(--ui); color: var(--muted); margin: 0 0 4px; }
+.doc-parties h3 {
+  font: 700 .85rem/1.2 var(--ui); text-transform: uppercase; letter-spacing: .08em; color: var(--text);
+  margin: 0 0 8px; padding-bottom: 4px; border-bottom: 1.5px solid var(--text);
+}
+.doc-parties strong { font-size: 1.08rem; }
 .doc table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-.doc th { font: 600 .8rem/1.2 var(--ui); color: var(--muted); text-align: left; border-bottom: 1px solid var(--text); padding: 6px 4px; }
-.doc td { border-bottom: 1px solid var(--rule); padding: 7px 4px; vertical-align: top; }
+.doc-lineas th {
+  font: 700 .8rem/1.2 var(--ui); text-transform: uppercase; letter-spacing: .04em; color: var(--text); text-align: left;
+  border-top: 2px solid var(--text); border-bottom: 2px solid var(--text); padding: 8px 6px;
+}
+.doc-lineas td { border-bottom: 1px solid var(--rule); padding: 8px 6px; vertical-align: top; }
 .doc th.num, .doc td.num { text-align: right; }
 .doc .tablewrap { overflow-x: auto; }
-.doc-totals { margin-left: auto; margin-top: 16px; max-width: 360px; }
-.doc-totals td { border: 0; padding: 3px 4px; }
-.doc-totals tr.total td { border-top: 2px solid var(--text); font-weight: 700; font-size: 1.1rem; padding-top: 8px; }
-.doc-foot { margin-top: 24px; font: .75rem/1.4 var(--ui); color: var(--muted); word-break: break-all; }
+/* Totales, notas, forma de pago y pie: siempre al final de la hoja */
+.doc-pie { margin-top: auto; padding-top: 24px; }
+.doc-totals { margin-left: auto; max-width: 380px; }
+.doc-totals td { border: 0; padding: 4px 6px; }
+.doc-totals tr.total td {
+  border-top: 2px solid var(--text); border-bottom: 4px double var(--text);
+  font-weight: 700; font-size: 1.3rem; padding: 10px 6px;
+}
+.doc-notas { margin: 20px 0 0; font-style: italic; }
+.doc-pago { margin: 14px 0 0; }
+.doc-texto-pie { margin: 14px 0 0; padding-top: 10px; border-top: 1px solid var(--rule); font-size: .85rem; color: var(--muted); }
 
-.doc-extras { text-align: center; font-weight: 700; margin: -4px 0 20px; line-height: 1.6; }
+.doc-extras {
+  margin: 0 0 24px; padding: 12px 16px;
+  border: 2px solid var(--text); border-radius: 4px;
+  text-align: center; font-weight: 700; font-size: 1.08rem; line-height: 1.6;
+}
 .extras { display: grid; gap: 12px; margin-bottom: 12px; }
 .extra { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; }
 .extra button { grid-column: span 2; justify-self: end; }
@@ -230,16 +256,25 @@ fieldset { border: 0; padding: 0; margin: 0; }
 #print-area { display: none; }
 
 @media print {
-  @page { size: A4; margin: 16mm; }
-  body { background: #fff; color: #000; padding: 0; }
-  .topbar, .tabs, main, #toast { display: none !important; }
+  /* Sin márgenes de página, el navegador no imprime su cabecera ni su pie (fecha, hora, dirección web) */
+  @page { size: A4; margin: 0; }
+  html, body { background: #fff; color: #000; padding: 0; margin: 0; }
+  .topbar, .tabs, main, #toast, .modal { display: none !important; }
   #print-area { display: block; }
-  #print-area .doc { border: 0; padding: 0; margin: 0; font-size: 11pt; color: #000; background: #fff; }
-  #print-area .doc * { color: #000 !important; }
+  #print-area .doc {
+    /* Una hoja A4 como mínimo, para que los totales queden abajo aunque haya pocas líneas */
+    min-height: 296mm; padding: 16mm 16mm 14mm; margin: 0;
+    border: 0; border-radius: 0; font-size: 11pt; color: #000; background: #fff;
+  }
+  #print-area .doc * { color: #000 !important; border-color: #000; }
+  #print-area .doc-lineas td { border-bottom-color: #999 !important; }
+  #print-area .doc-texto-pie { border-top-color: #999 !important; }
   #print-area .doc-parties { grid-template-columns: 1fr 1fr; }
   #print-area .stamp { display: none; }
   #print-area .doc-head { padding-right: 0; }
-  #print-area .doc td { border-bottom-color: #bbb; }
+  #print-area .tablewrap { overflow: visible; }
+  #print-area tr { break-inside: avoid; }
+  #print-area .doc-pie { break-inside: avoid; }
 }
 
 /* Pantalla de entrar con Google: sin pestañas hasta que haya sesión */

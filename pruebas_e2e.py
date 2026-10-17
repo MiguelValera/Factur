@@ -155,7 +155,7 @@ def main():
         P.fill('.line [data-f=concepto]', 'Embrague'); P.fill('.line [data-f=precio]', '400'); P.wait_for_timeout(4500)
         pres = drive.datos()['presupuestos']
         assert len(pres) == 1 and pres[0]['lineas'][0]['concepto'] == 'Embrague', 'lo escrito se sube solo'
-        P.click('#ver'); assert 'Presupuesto' in P.inner_text('#preview .doc-title') and 'Válido hasta' in P.inner_text('#preview')
+        P.click('#ver'); assert 'PRESUPUESTO' in P.inner_text('#preview .doc-title').upper() and 'Válido hasta' in P.inner_text('#preview')
         P.click('#a-factura'); P.wait_for_selector('#emitir')
         assert P.input_value('.line [data-f=concepto]') == 'Embrague'
         P.click('#emitir'); P.wait_for_selector('.stamp:not(.draft)')

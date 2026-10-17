@@ -19,7 +19,8 @@ PWA de facturación para el taller mecánico familiar. Funciona sin conexión en
 - **Presupuestos**: almacén `presupuestos`, numerados `PRE-AÑO-0001` al crearlos (tras sincronizar). No son facturas: se pueden cambiar siempre, no entran en la huella. «Pasar a factura» crea un borrador de factura con sus datos (`presupuestoId`) y marca el presupuesto (`facturaId`). El editor es `editorBorrador(f, esPres)`.
 - **Guardado**: cada acción (cliente, factura, presupuesto, ajustes, importar) llama a `Nube.guardar()`, que sube a Drive al momento; lo que se escribe en un formulario se sube a los 3 s (`Nube.programar`). Si no hay sesión, `pedirSesion` abre una ventana que bloquea la app hasta volver a entrar, sin perder la pantalla. Las sincronizaciones van en fila (`sincronizar`).
 - **Interfaz para personas mayores**: letra de 18 px, campos y botones de 56 px, botones principales a todo el ancho en el móvil y «Eliminar» separado al final. Mantenerlo así en pantallas nuevas.
-- `extras`: datos clave-valor por factura (Matrícula, Kilómetros…). Se imprimen centrados y en negrita debajo del cliente.
+- `extras`: datos clave-valor por factura (Matrícula, Kilómetros…). Se imprimen centrados, en negrita y dentro de un recuadro, debajo del cliente.
+- Documento impreso (`docHtml`): columnas Precio sin IVA, IVA y Total con IVA por línea (`lineaConIva`, solo para mostrar). La huella no se imprime. `@page { margin: 0 }` para que el navegador no añada su cabecera y su pie (fecha, hora, dirección web); el margen lo pone el propio documento. El bloque `.doc-pie` (totales, notas, forma de pago, pie) va siempre abajo de la hoja.
 - Las copias se mezclan por UUID (`fusionar`). Las eliminaciones se registran en el ajuste `eliminados`.
 - **Sesión de Google obligatoria**: sin cuenta conectada y permiso vigente, el router solo muestra `vistaEntrar`. Los datos viven en Google Drive (archivo «Facturas - datos (no borrar).json») y IndexedDB es la copia local. Google Identity Services con modelo de token y permiso `drive.file`, sin servidor. El permiso dura 1 hora: al caducar se vuelve a la pantalla de entrar y se renueva con un toque. Al entrar con otra cuenta se vacían los datos locales. `GOOGLE_CLIENT_ID` está al principio de `app.js`.
 
@@ -38,7 +39,7 @@ Verifactu: la base técnica (inmutabilidad y huella encadenada) está hecha, per
 - A mano: `python3 -m http.server` y abrir http://localhost:8000. La app exige https o localhost.
 - `.gitignore` excluye todos los `*.json` para que nunca se suba una copia de seguridad.
 
-## Estado actual (v1.4.1)
+## Estado actual (v1.4.2)
 Hecho: clientes con validación de DNI, NIE y CIF; facturas con IVA 21, 10, 4 y 0 % y retención IRPF opcional; datos adicionales (matrícula…); rectificativas; impresión y PDF; serie única para todos los dispositivos; entrar con Google obligatorio y datos en Google Drive; presupuestos; guardado en Drive tras cada cambio con aviso «Guardado ✓»; copia manual exportar/importar; aviso de nueva versión; interfaz con letra y botones grandes pensada para personas mayores.
 
 ## Pendiente

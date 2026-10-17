@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.4.1';
+const APP_VERSION = '1.4.2';
 
 // Google Drive: pega aquí el ID de cliente OAuth de tu proyecto de Google Cloud (ver README).
 // No es secreto: identifica la app ante Google, pero no da acceso a ningún dato.
@@ -242,6 +242,11 @@ function bloqueParte(titulo, o) {
     ${extra ? `<div>${esc(extra)}</div>` : ''}</div>`;
 }
 const extrasValidos = ex => (ex || []).filter(x => String(x.clave || '').trim() && String(x.valor || '').trim());
+// Importe de una línea con su IVA (solo para mostrar: los totales se calculan por tipo de IVA)
+function lineaConIva(l) {
+  const b = baseLinea(l);
+  return Number.isNaN(b) ? NaN : b + r2(b * (Number(l.iva) || 0) / 100);
+}
 function docHtml(d) {
   const t = d.totales;
   const unTipo = t.desglose.length === 1;
@@ -252,43 +257,45 @@ function docHtml(d) {
   const sello = esPres ? '' : d.borrador
     ? `<div class="stamp draft">Borrador</div>`
     : `<div class="stamp${d.fresca ? ' fresh' : ''}">Emitida</div>`;
+  const extras = extrasValidos(d.extras);
   return `<article class="doc has-stamp">
     ${sello}
     <div class="doc-head">
       <p class="doc-title">${esPres ? 'Presupuesto' : d.tipo === 'R' ? 'Factura rectificativa' : 'Factura'}</p>
-      <div>Nº <strong>${esc(d.codigo || 'pendiente de emitir')}</strong></div>
-      <div>Fecha: ${esc(fecha(d.fecha))}</div>
-      ${esPres && d.validoHasta ? `<div>Válido hasta: ${esc(fecha(d.validoHasta))}</div>` : ''}
-      ${d.fechaOperacion && d.fechaOperacion !== d.fecha ? `<div>Fecha de la operación: ${esc(fecha(d.fechaOperacion))}</div>` : ''}
+      <div><b>Nº:</b> <strong class="doc-codigo">${esc(d.codigo || 'pendiente de emitir')}</strong></div>
+      <div><b>Fecha:</b> ${esc(fecha(d.fecha))}</div>
+      ${esPres && d.validoHasta ? `<div><b>Válido hasta:</b> ${esc(fecha(d.validoHasta))}</div>` : ''}
+      ${d.fechaOperacion && d.fechaOperacion !== d.fecha ? `<div><b>Fecha de la operación:</b> ${esc(fecha(d.fechaOperacion))}</div>` : ''}
     </div>
     <div class="doc-parties">${bloqueParte('Emisor', d.emisor)}${bloqueParte('Cliente', d.cliente)}</div>
-    ${extrasValidos(d.extras).length ? `<div class="doc-extras">${extrasValidos(d.extras).map(x => `<div>${esc(x.clave)}: ${esc(x.valor)}</div>`).join('')}</div>` : ''}
+    ${extras.length ? `<div class="doc-extras">${extras.map(x => `<div>${esc(x.clave)}: ${esc(x.valor)}</div>`).join('')}</div>` : ''}
     ${d.tipo === 'R' ? `<p>Rectifica la factura <strong>${esc(d.rectificaCodigo)}</strong> (rectificación por diferencias).${d.motivo ? ` Motivo: ${esc(d.motivo)}` : ''}</p>` : ''}
-    <div class="tablewrap"><table>
-      <thead><tr><th>Concepto</th><th class="num">Cant.</th><th class="num">Precio</th><th class="num">IVA</th><th class="num">Importe</th></tr></thead>
+    <div class="tablewrap"><table class="doc-lineas">
+      <thead><tr><th>Concepto</th><th class="num">Cant.</th><th class="num">Precio sin IVA</th><th class="num">IVA</th><th class="num">Total con IVA</th></tr></thead>
       <tbody>${d.lineas.map(l => {
-        const b = baseLinea(l);
+        const c = lineaConIva(l);
         return `<tr><td>${esc(l.concepto)}</td><td class="num">${fmtNum.format(parseNum(l.cantidad) || 0)}</td>
           <td class="num">${fmtPrecio.format(parseNum(l.precio) || 0)}</td><td class="num">${esc(l.iva)} %</td>
-          <td class="num">${Number.isNaN(b) ? '—' : eur(b)}</td></tr>`;
+          <td class="num"><b>${Number.isNaN(c) ? '—' : eur(c)}</b></td></tr>`;
       }).join('')}</tbody>
     </table></div>
-    <table class="doc-totals"><tbody>
-      ${filasIva}
-      ${t.retencion ? `<tr><td>Retención IRPF ${fmtNum.format(t.retencionTipo)} %</td><td class="num">−${eur(t.retencion)}</td></tr>` : ''}
-      <tr class="total"><td>Total</td><td class="num">${eur(t.total)}</td></tr>
-    </tbody></table>
-    ${d.notas ? `<p style="margin-top:16px">${esc(d.notas).replace(/\n/g, '<br>')}</p>` : ''}
-    ${d.emisor?.iban && !esPres ? `<p>Forma de pago: transferencia a ${esc(d.emisor.iban)}</p>` : ''}
-    ${d.emisor?.pie ? `<p class="small">${esc(d.emisor.pie).replace(/\n/g, '<br>')}</p>` : ''}
-    ${d.hash ? `<div class="doc-foot">Huella del registro: ${esc(d.hash)}</div>` : ''}
+    <div class="doc-pie">
+      <table class="doc-totals"><tbody>
+        ${filasIva}
+        ${t.retencion ? `<tr><td>Retención IRPF ${fmtNum.format(t.retencionTipo)} %</td><td class="num">−${eur(t.retencion)}</td></tr>` : ''}
+        <tr class="total"><td>Total</td><td class="num">${eur(t.total)}</td></tr>
+      </tbody></table>
+      ${d.notas ? `<p class="doc-notas">${esc(d.notas).replace(/\n/g, '<br>')}</p>` : ''}
+      ${d.emisor?.iban && !esPres ? `<p class="doc-pago"><b>Forma de pago:</b> transferencia a <u>${esc(d.emisor.iban)}</u></p>` : ''}
+      ${d.emisor?.pie ? `<p class="doc-texto-pie">${esc(d.emisor.pie).replace(/\n/g, '<br>')}</p>` : ''}
+    </div>
   </article>`;
 }
 function datosDocEmitida(f, fresca = false) {
   return {
     tipo: f.tipo, codigo: f.codigo, fecha: f.fecha, fechaOperacion: f.fechaOperacion,
     emisor: f.emisorSnap, cliente: f.clienteSnap, lineas: f.lineas, totales: f.totales,
-    extras: f.extras, notas: f.notas, rectificaCodigo: f.rectificaCodigo, motivo: f.motivo, hash: f.hash, fresca,
+    extras: f.extras, notas: f.notas, rectificaCodigo: f.rectificaCodigo, motivo: f.motivo, fresca,
   };
 }
 function imprimir(html, titulo) {
@@ -553,7 +560,9 @@ async function editorBorrador(f, esPres = false) {
     $$('.line', app).forEach(el => {
       const l = f.lineas.find(x => x.id === el.dataset.id);
       const b = l ? baseLinea(l) : 0;
-      $('[data-base]', el).textContent = Number.isNaN(b) ? 'Número no válido' : eur(b);
+      const c = l ? lineaConIva(l) : 0;
+      $('[data-base]', el).innerHTML = Number.isNaN(b) ? '<span class="badline">Número no válido</span>'
+        : `<span class="muted">Sin IVA ${eur(b)}</span><br>Con IVA <strong>${eur(c)}</strong>`;
     });
   };
 
