@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Facturas</title>
-  <meta name="description" content="Facturación sin conexión para un negocio pequeño">
+  <meta name="description" content="Facturas y presupuestos para un negocio pequeño">
   <meta name="theme-color" content="#F7F8F6" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#15171B" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -19,8 +19,10 @@
 <body>
   <header class="topbar">
     <a class="brand" href="#/facturas">Facturas</a>
+    <span id="estado-guardado" class="estado" role="status" aria-live="polite"></span>
     <nav class="tabs" aria-label="Secciones">
       <a href="#/facturas" data-tab="facturas">Facturas</a>
+      <a href="#/presupuestos" data-tab="presupuestos">Presupuestos</a>
       <a href="#/clientes" data-tab="clientes">Clientes</a>
       <a href="#/ajustes" data-tab="ajustes">Ajustes</a>
     </nav>

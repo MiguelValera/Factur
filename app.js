@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 
 // Google Drive: pega aquí el ID de cliente OAuth de tu proyecto de Google Cloud (ver README).
 // No es secreto: identifica la app ante Google, pero no da acceso a ningún dato.
@@ -10,6 +10,8 @@ const NUBE_NOMBRE = 'Facturas - datos (no borrar).json';
 const GAPI = 'https://www.googleapis.com';
 const FORMATO_COPIA = 'facturas-offline';
 const IVA_TIPOS = [21, 10, 4, 0];
+const ALMACENES = ['ajustes', 'clientes', 'facturas', 'presupuestos'];
+const SERIE_PRESUPUESTOS = 'PRE';
 
 /* ============================================================
    Base de datos local (IndexedDB)
@@ -19,12 +21,15 @@ const DB = (() => {
   function open() {
     if (!dbp) {
       dbp = new Promise((res, rej) => {
-        const r = indexedDB.open('facturas-db', 1);
-        r.onupgradeneeded = () => {
+        const r = indexedDB.open('facturas-db', 2);
+        r.onupgradeneeded = e => {
           const db = r.result;
-          db.createObjectStore('ajustes', { keyPath: 'clave' });
-          db.createObjectStore('clientes', { keyPath: 'id' });
-          db.createObjectStore('facturas', { keyPath: 'id' });
+          if (e.oldVersion < 1) {
+            db.createObjectStore('ajustes', { keyPath: 'clave' });
+            db.createObjectStore('clientes', { keyPath: 'id' });
+            db.createObjectStore('facturas', { keyPath: 'id' });
+          }
+          if (e.oldVersion < 2) db.createObjectStore('presupuestos', { keyPath: 'id' });
         };
         r.onsuccess = () => res(r.result);
         r.onerror = () => rej(r.error);
@@ -49,8 +54,8 @@ const DB = (() => {
     },
     async vaciar() { // quita todos los datos de este dispositivo (al cambiar de cuenta de Google)
       const db = await open();
-      const t = db.transaction(['ajustes', 'clientes', 'facturas'], 'readwrite');
-      for (const s of ['ajustes', 'clientes', 'facturas']) t.objectStore(s).clear();
+      const t = db.transaction(ALMACENES, 'readwrite');
+      for (const s of ALMACENES) t.objectStore(s).clear();
       return done(t);
     },
   };
@@ -243,15 +248,17 @@ function docHtml(d) {
   const filasIva = t.desglose.map(x => `
     <tr><td>Base imponible${unTipo ? '' : ` al ${x.tipo} %`}</td><td class="num">${eur(x.base)}</td></tr>
     <tr><td>IVA ${x.tipo} %</td><td class="num">${eur(x.cuota)}</td></tr>`).join('');
-  const sello = d.borrador
+  const esPres = d.clase === 'presupuesto';
+  const sello = esPres ? '' : d.borrador
     ? `<div class="stamp draft">Borrador</div>`
     : `<div class="stamp${d.fresca ? ' fresh' : ''}">Emitida</div>`;
   return `<article class="doc has-stamp">
     ${sello}
     <div class="doc-head">
-      <p class="doc-title">${d.tipo === 'R' ? 'Factura rectificativa' : 'Factura'}</p>
+      <p class="doc-title">${esPres ? 'Presupuesto' : d.tipo === 'R' ? 'Factura rectificativa' : 'Factura'}</p>
       <div>Nº <strong>${esc(d.codigo || 'pendiente de emitir')}</strong></div>
       <div>Fecha: ${esc(fecha(d.fecha))}</div>
+      ${esPres && d.validoHasta ? `<div>Válido hasta: ${esc(fecha(d.validoHasta))}</div>` : ''}
       ${d.fechaOperacion && d.fechaOperacion !== d.fecha ? `<div>Fecha de la operación: ${esc(fecha(d.fechaOperacion))}</div>` : ''}
     </div>
     <div class="doc-parties">${bloqueParte('Emisor', d.emisor)}${bloqueParte('Cliente', d.cliente)}</div>
@@ -272,7 +279,7 @@ function docHtml(d) {
       <tr class="total"><td>Total</td><td class="num">${eur(t.total)}</td></tr>
     </tbody></table>
     ${d.notas ? `<p style="margin-top:16px">${esc(d.notas).replace(/\n/g, '<br>')}</p>` : ''}
-    ${d.emisor?.iban ? `<p>Forma de pago: transferencia a ${esc(d.emisor.iban)}</p>` : ''}
+    ${d.emisor?.iban && !esPres ? `<p>Forma de pago: transferencia a ${esc(d.emisor.iban)}</p>` : ''}
     ${d.emisor?.pie ? `<p class="small">${esc(d.emisor.pie).replace(/\n/g, '<br>')}</p>` : ''}
     ${d.hash ? `<div class="doc-foot">Huella del registro: ${esc(d.hash)}</div>` : ''}
   </article>`;
@@ -298,8 +305,8 @@ function imprimir(html, titulo) {
 let guardarPendiente = null; // vacía el autoguardado al cambiar de pantalla
 
 async function cambiosSinCopia() {
-  const [ultima, facturas, clientes] = await Promise.all([getAjuste('ultimaCopia'), DB.all('facturas'), DB.all('clientes')]);
-  const ultimoCambio = [...facturas.map(f => f.emitidaEn || f.actualizado || ''), ...clientes.map(c => c.actualizado || '')]
+  const [ultima, facturas, clientes, presupuestos] = await Promise.all([getAjuste('ultimaCopia'), DB.all('facturas'), DB.all('clientes'), DB.all('presupuestos')]);
+  const ultimoCambio = [...facturas.map(f => f.emitidaEn || f.actualizado || ''), ...[...clientes, ...presupuestos].map(c => c.actualizado || '')]
     .reduce((m, x) => (x > m ? x : m), '');
   return ultimoCambio && (!ultima || ultimoCambio > ultima);
 }
@@ -360,7 +367,53 @@ async function crearBorrador(extra = {}) {
     lineas: [nuevaLinea()], retencionTipo: '0', notas: '', motivo: '', creado: ahora(), actualizado: ahora(), ...extra,
   };
   await DB.put('facturas', f);
+  Nube.guardar();
   location.replace('#/factura/' + f.id);
+}
+
+// Los presupuestos se numeran al crearlos (PRE-2026-0001). No son facturas: se pueden cambiar siempre.
+async function crearPresupuesto(extra = {}) {
+  app.innerHTML = '<p class="muted">Preparando el presupuesto…</p>';
+  await Nube.guardar(); // trae lo último para no repetir número
+  const anio = +hoy().slice(0, 4);
+  const numero = (await DB.all('presupuestos')).filter(p => p.anio === anio).reduce((m, p) => Math.max(m, p.numero || 0), 0) + 1;
+  const validez = new Date(); validez.setDate(validez.getDate() + 30);
+  const p = {
+    id: uuid(), anio, numero, codigo: `${SERIE_PRESUPUESTOS}-${anio}-${String(numero).padStart(4, '0')}`,
+    fecha: hoy(), validoHasta: validez.toISOString().slice(0, 10), clienteId: '', extras: await clavesHabituales(),
+    lineas: [nuevaLinea()], retencionTipo: '0', notas: '', creado: ahora(), actualizado: ahora(), ...extra,
+  };
+  await DB.put('presupuestos', p);
+  Nube.guardar();
+  location.replace('#/presupuesto/' + p.id);
+}
+
+async function vistaPresupuesto(id) {
+  const p = await DB.get('presupuestos', id);
+  if (!p) { app.innerHTML = `<h1>No encontrado</h1><p>Ese presupuesto no existe o se ha eliminado.</p><a class="btn" href="#/presupuestos">Volver a presupuestos</a>`; return; }
+  return editorBorrador(p, true);
+}
+
+async function vistaPresupuestos() {
+  const [presupuestos, clientes] = await Promise.all([DB.all('presupuestos'), DB.all('clientes')]);
+  const cli = new Map(clientes.map(c => [c.id, c]));
+  presupuestos.sort((a, b) => b.fecha.localeCompare(a.fecha) || b.codigo.localeCompare(a.codigo));
+  app.innerHTML = `
+    <div class="head-row"><h1>Presupuestos</h1><a class="btn primary" href="#/presupuesto/nuevo">Nuevo presupuesto</a></div>
+    ${presupuestos.length ? `<input class="search" type="search" placeholder="Buscar por número, cliente o matrícula" aria-label="Buscar presupuestos" id="buscar">
+      <ul class="list">${presupuestos.map(p => {
+        const nombre = cli.get(p.clienteId)?.nombre;
+        return `<li><a class="item" href="#/presupuesto/${p.id}" data-buscar="${esc([p.codigo, nombre, ...(p.extras || []).map(x => x.valor)].filter(Boolean).join(' ').toLowerCase())}">
+          <span class="t">${esc(p.codigo)} ${p.facturaId ? '<span class="chip">Pasado a factura</span>' : ''}</span>
+          <span class="num t">${eur(calcTotales(p.lineas, p.retencionTipo).total)}</span>
+          <span class="s">${esc(nombre || 'Sin cliente')}</span>
+          <span class="s num">${esc(fecha(p.fecha))}</span></a></li>`;
+      }).join('')}</ul>`
+      : `<p class="empty">Todavía no has hecho ningún presupuesto.</p>`}`;
+  $('#buscar')?.addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase();
+    $$('a.item', app).forEach(a => { a.parentElement.hidden = q && !a.dataset.buscar.includes(q); });
+  });
 }
 
 async function vistaFactura(id, accion) {
@@ -404,7 +457,9 @@ async function vistaEmitida(f) {
   $('#imprimir').onclick = () => imprimir(docHtml(datosDocEmitida(f)), f.codigo);
 }
 
-async function editorBorrador(f) {
+// Editor de borradores de factura y de presupuestos (esPres). Se guarda solo mientras se escribe.
+async function editorBorrador(f, esPres = false) {
+  const almacen = esPres ? 'presupuestos' : 'facturas';
   const [clientes, emisor, serie, todas] = await Promise.all([DB.all('clientes'), getAjuste('emisor'), getSerie(), DB.all('facturas')]);
   clientes.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
 
@@ -437,8 +492,10 @@ async function editorBorrador(f) {
     </div>`;
 
   app.innerHTML = `
-    <div class="head-row"><h1>${f.tipo === 'R' ? 'Rectificativa' : 'Nueva factura'}</h1></div>
-    ${!emisor || !serie ? `<div class="notice">Faltan tus datos de facturador o la serie de facturación. <a href="#/ajustes">Complétalos en ajustes</a>.</div>` : ''}
+    <div class="head-row"><h1>${esPres ? `Presupuesto ${esc(f.codigo)}` : f.tipo === 'R' ? 'Rectificativa' : 'Nueva factura'}</h1></div>
+    ${!emisor || (!serie && !esPres) ? `<div class="notice">Faltan tus datos de facturador${esPres ? '' : ' o la serie de facturación'}. <a href="#/ajustes">Complétalos en ajustes</a>.</div>` : ''}
+    ${esPres && f.facturaId ? `<div class="notice">Este presupuesto ya se pasó a factura. <a href="#/factura/${esc(f.facturaId)}">Ver la factura</a></div>` : ''}
+    <p class="muted">Lo que escribes se guarda solo.</p>
     <form id="form" class="stack" autocomplete="off" onsubmit="return false">
       ${f.tipo === 'R' ? `
         <p>Rectifica la factura <strong>${esc(f.rectificaCodigo)}</strong>. Se han copiado sus conceptos en negativo: deja solo lo que corrige.</p>
@@ -449,7 +506,7 @@ async function editorBorrador(f) {
           <option value="">Elige un cliente</option>
           ${clientes.map(c => `<option value="${c.id}"${c.id === f.clienteId ? ' selected' : ''}>${esc(c.nombre)} (${esc(c.nif)})</option>`).join('')}
         </select>
-        <div class="hint"><a href="#/cliente/nuevo?volver=${f.id}">Añadir un cliente nuevo</a></div>
+        <div class="hint"><a href="#/cliente/nuevo?volver=${f.id}${esPres ? '&tipo=presupuesto' : ''}">Añadir un cliente nuevo</a></div>
       </div>
       <div>
         <h2>Datos adicionales</h2>
@@ -460,22 +517,31 @@ async function editorBorrador(f) {
         <button type="button" id="anadir-extra" style="margin-top:8px">Añadir dato</button>
       </div>
       <div class="grid three">
-        <div><label for="fecha">Fecha de la factura</label><input id="fecha" type="date" data-g="fecha" value="${esc(f.fecha)}"></div>
-        <div><label for="fop">Fecha de la operación</label><input id="fop" type="date" data-g="fechaOperacion" value="${esc(f.fechaOperacion)}"><div class="hint">Solo si es distinta</div></div>
+        <div><label for="fecha">Fecha ${esPres ? 'del presupuesto' : 'de la factura'}</label><input id="fecha" type="date" data-g="fecha" value="${esc(f.fecha)}"></div>
+        ${esPres
+          ? `<div><label for="validez">Válido hasta</label><input id="validez" type="date" data-g="validoHasta" value="${esc(f.validoHasta)}"></div>`
+          : `<div><label for="fop">Fecha de la operación</label><input id="fop" type="date" data-g="fechaOperacion" value="${esc(f.fechaOperacion)}"><div class="hint">Solo si es distinta</div></div>`}
         <div><label for="ret">Retención IRPF %</label><input id="ret" inputmode="decimal" data-g="retencionTipo" value="${esc(f.retencionTipo)}"></div>
       </div>
       <h2>Conceptos</h2>
       <div class="lines" id="lineas">${f.lineas.map(lineaHtml).join('')}</div>
       <datalist id="conceptos">${[...conocidos.keys()].map(c => `<option value="${esc(c)}">`).join('')}</datalist>
       <button type="button" id="anadir">Añadir concepto</button>
-      <div><label for="notas">Notas en la factura</label><textarea id="notas" data-g="notas" placeholder="Por ejemplo, la causa de exención si usas IVA 0 %">${esc(f.notas)}</textarea></div>
+      <div><label for="notas">Notas ${esPres ? 'en el presupuesto' : 'en la factura'}</label><textarea id="notas" data-g="notas" placeholder="Por ejemplo, la causa de exención si usas IVA 0 %">${esc(f.notas)}</textarea></div>
     </form>
     <table class="doc-totals" id="totales" aria-live="polite"></table>
-    <div class="row" style="margin-top:20px">
-      <button type="button" class="primary" id="emitir">Emitir factura</button>
-      <button type="button" id="ver">Vista previa</button>
-      <button type="button" class="danger" id="borrar">Eliminar borrador</button>
+    ${esPres ? `
+    <div class="acciones">
+      <button type="button" class="primary" id="imprimir">Imprimir o guardar PDF</button>
+      ${f.facturaId ? '' : `<button type="button" id="a-factura">Pasar a factura</button>`}
+      <button type="button" id="ver">Ver cómo queda</button>
     </div>
+    <div class="zona-peligro"><button type="button" class="danger" id="borrar">Eliminar presupuesto</button></div>` : `
+    <div class="acciones">
+      <button type="button" class="primary" id="emitir">Emitir factura</button>
+      <button type="button" id="ver">Ver cómo queda</button>
+    </div>
+    <div class="zona-peligro"><button type="button" class="danger" id="borrar">Eliminar borrador</button></div>`}
     <div id="preview"></div>`;
 
   const pintarTotales = () => {
@@ -492,8 +558,9 @@ async function editorBorrador(f) {
   };
 
   let timer;
-  const guardar = async () => { clearTimeout(timer); guardarPendiente = null; f.actualizado = ahora(); await DB.put('facturas', f); };
-  const programar = () => { clearTimeout(timer); guardarPendiente = guardar; timer = setTimeout(guardar, 400); };
+  const guardar = async () => { clearTimeout(timer); guardarPendiente = null; f.actualizado = ahora(); await DB.put(almacen, f); };
+  // En el dispositivo al momento; en Google Drive cuando se deja de escribir unos segundos
+  const programar = () => { clearTimeout(timer); guardarPendiente = guardar; timer = setTimeout(guardar, 400); Nube.programar(); };
 
   const form = $('#form');
   form.addEventListener('input', e => {
@@ -551,19 +618,41 @@ async function editorBorrador(f) {
     $(`#c-${l.id}`).focus();
     pintarTotales(); programar();
   };
+  const datosDoc = () => ({ ...f, emisor, cliente: clientes.find(c => c.id === f.clienteId),
+    totales: calcTotales(f.lineas, f.retencionTipo), borrador: !esPres, clase: esPres ? 'presupuesto' : 'factura' });
   $('#ver').onclick = async () => {
-    const cliente = clientes.find(c => c.id === f.clienteId);
-    $('#preview').innerHTML = docHtml({ ...f, emisor, cliente, totales: calcTotales(f.lineas, f.retencionTipo), borrador: true });
+    $('#preview').innerHTML = docHtml(datosDoc());
     $('#preview').scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
   $('#borrar').onclick = async () => {
-    if (!confirm('¿Eliminar este borrador? No se puede deshacer.')) return;
+    if (!confirm(esPres ? `¿Eliminar el presupuesto ${f.codigo}? No se puede deshacer.` : '¿Eliminar este borrador? No se puede deshacer.')) return;
     clearTimeout(timer); guardarPendiente = null;
-    await DB.del('facturas', f.id);
+    await DB.del(almacen, f.id);
     await marcarEliminado(f.id);
-    Nube.programar();
-    location.hash = '#/facturas';
+    Nube.guardar();
+    toast(esPres ? 'Presupuesto eliminado' : 'Borrador eliminado');
+    location.hash = esPres ? '#/presupuestos' : '#/facturas';
   };
+  if (esPres) {
+    $('#imprimir').onclick = async () => {
+      if (!f.clienteId) { toast('Elige un cliente antes de imprimir.'); return; }
+      await guardar();
+      imprimir(docHtml(datosDoc()), `Presupuesto ${f.codigo}`);
+    };
+    $('#a-factura')?.addEventListener('click', async () => {
+      if (!confirm('Se creará una factura con los mismos datos. Podrás revisarla antes de emitirla. ¿Continuar?')) return;
+      const facturaId = uuid();
+      f.facturaId = facturaId;
+      await guardar();
+      await crearBorrador({
+        id: facturaId, presupuestoId: f.id, clienteId: f.clienteId, notas: f.notas || '', retencionTipo: f.retencionTipo,
+        extras: (f.extras || []).map(x => nuevoExtra(x.clave, x.valor)),
+        lineas: f.lineas.map(l => ({ ...l, id: uuid() })),
+      });
+    });
+    pintarTotales();
+    return;
+  }
   $('#emitir').onclick = async e => {
     const permiso = Nube.asegurarPermiso(); // en el mismo toque, para que Safari deje abrir Google si hace falta
     const boton = e.target;
@@ -636,14 +725,9 @@ async function emitir(f) {
   g.actualizado = g.emitidaEn;
   await DB.put('facturas', g);
   sessionStorage.setItem('recienEmitida', g.id);
-  try {
-    const r = await Nube.sincronizar(); // se sube en el acto para que los demás dispositivos sigan la numeración
-    toast(r.repetidos.length ? avisoRepetido(r.repetidos[0]) : `Factura ${codigo} emitida y guardada en Google Drive`);
-  } catch {
-    toast(`Factura ${codigo} emitida. No se ha podido subir a Google Drive: se reintentará.`);
-    Nube.programar();
-  }
   router();
+  // Se sube en el acto para que los demás dispositivos sigan la numeración
+  if (await Nube.guardar()) toast(`Factura ${codigo} emitida y guardada`);
   return null;
 }
 
@@ -669,8 +753,10 @@ async function vistaCliente(id, params) {
   const nuevo = id === 'nuevo';
   const c = nuevo ? { id: uuid(), nombre: '', nif: '', direccion: '', cp: '', poblacion: '', provincia: '', pais: 'España', email: '', telefono: '' } : await DB.get('clientes', id);
   if (!c) { app.innerHTML = `<h1>No encontrado</h1><a class="btn" href="#/clientes">Volver a clientes</a>`; return; }
-  const usado = !nuevo && (await DB.all('facturas')).some(f => f.clienteId === c.id);
+  const usado = !nuevo && [...await DB.all('facturas'), ...await DB.all('presupuestos')].some(f => f.clienteId === c.id);
   const volver = params.get('volver');
+  const volverA = params.get('tipo') === 'presupuesto' ? 'presupuestos' : 'facturas';
+  const rutaVolver = volver && (volverA === 'presupuestos' ? '#/presupuesto/' : '#/factura/') + volver;
   const campo = (k, etiqueta, extra = '') => `<div ${extra.includes('span-2') ? 'class="span-2"' : ''}><label for="${k}">${etiqueta}</label><input id="${k}" name="${k}" value="${esc(c[k])}" ${extra.replace('span-2', '')}></div>`;
 
   app.innerHTML = `
@@ -689,11 +775,11 @@ async function vistaCliente(id, params) {
       </div>
       <div class="row">
         <button type="submit" class="primary">Guardar cliente</button>
-        <a class="btn" href="${volver ? '#/factura/' + esc(volver) : '#/clientes'}">Cancelar</a>
-        ${!nuevo ? `<a class="btn" href="#/factura/nueva?cliente=${c.id}">Facturar a este cliente</a>` : ''}
+        <a class="btn" href="${volver ? esc(rutaVolver) : '#/clientes'}">Cancelar</a>
+        ${!nuevo ? `<a class="btn" href="#/factura/nueva?cliente=${c.id}">Hacerle una factura</a><a class="btn" href="#/presupuesto/nuevo?cliente=${c.id}">Hacerle un presupuesto</a>` : ''}
         ${!nuevo && !usado ? `<button type="button" class="danger" id="borrar">Eliminar cliente</button>` : ''}
       </div>
-      ${usado ? `<p class="muted small">Este cliente tiene facturas, así que no se puede eliminar. Los cambios que hagas no alteran las facturas ya emitidas.</p>` : ''}
+      ${usado ? `<p class="muted small">Este cliente tiene facturas o presupuestos, así que no se puede eliminar. Los cambios que hagas no alteran las facturas ya emitidas.</p>` : ''}
     </form>`;
 
   const hint = () => {
@@ -713,11 +799,13 @@ async function vistaCliente(id, params) {
     if (!r.ok && !confirm(`${r.msg} ¿Guardar de todas formas?`)) return;
     c.creado ||= ahora(); c.actualizado = ahora();
     await DB.put('clientes', c);
-    Nube.programar();
     if (volver) {
-      const f = await DB.get('facturas', volver);
-      if (f && f.estado === 'borrador') { f.clienteId = c.id; f.actualizado = ahora(); await DB.put('facturas', f); }
-      location.hash = '#/factura/' + volver;
+      const f = await DB.get(volverA, volver);
+      if (f && f.estado !== 'emitida') { f.clienteId = c.id; f.actualizado = ahora(); await DB.put(volverA, f); }
+    }
+    Nube.guardar();
+    if (volver) {
+      location.hash = rutaVolver;
     } else {
       toast('Cliente guardado');
       location.hash = '#/clientes';
@@ -727,7 +815,8 @@ async function vistaCliente(id, params) {
     if (!confirm(`¿Eliminar a ${c.nombre}?`)) return;
     await DB.del('clientes', c.id);
     await marcarEliminado(c.id);
-    Nube.programar();
+    Nube.guardar();
+    toast('Cliente eliminado');
     location.hash = '#/clientes';
   });
 }
@@ -804,7 +893,7 @@ async function vistaAjustes() {
     if (s.endsWith('R')) { toast('La serie no puede terminar en R: esa letra se reserva para las rectificativas.'); return; }
     if (serie && serie !== s && !confirm(`Las próximas facturas, desde todos los dispositivos, usarán la serie ${s} en lugar de ${serie}. ¿Continuar?`)) return;
     await setAjuste('serie', { serie: s, actualizado: ahora() });
-    Nube.programar();
+    Nube.guardar();
     toast(`Serie ${s} guardada`);
   };
   $('#f-emisor').onsubmit = async e => {
@@ -815,7 +904,7 @@ async function vistaAjustes() {
     if (!d.nombre || !d.nif || !d.direccion) { toast('Nombre, NIF y dirección son obligatorios.'); return; }
     d.actualizado = ahora();
     await setAjuste('emisor', d);
-    Nube.programar();
+    Nube.guardar();
     toast('Datos guardados');
   };
   $('#exportar').onclick = exportarCopia;
@@ -859,10 +948,10 @@ async function vistaAjustes() {
    Copias de seguridad
    ============================================================ */
 async function datosCopia() {
-  const [emisor, serie, clientes, facturas, eliminados] = await Promise.all([
-    getAjuste('emisor'), getAjuste('serie'), DB.all('clientes'), DB.all('facturas'), getAjuste('eliminados')]);
+  const [emisor, serie, clientes, facturas, presupuestos, eliminados] = await Promise.all([
+    getAjuste('emisor'), getAjuste('serie'), DB.all('clientes'), DB.all('facturas'), DB.all('presupuestos'), getAjuste('eliminados')]);
   return { app: FORMATO_COPIA, formato: 1, version: APP_VERSION, exportado: ahora(), serie: serie || null,
-    emisor: emisor || null, clientes, facturas, eliminados: eliminados || {} };
+    emisor: emisor || null, clientes, facturas, presupuestos, eliminados: eliminados || {} };
 }
 async function exportarCopia() {
   const datos = await datosCopia();
@@ -892,7 +981,7 @@ async function importarCopia(file) {
   let d;
   try { d = JSON.parse(await file.text()); } catch { throw new Error('El archivo no es una copia válida.'); }
   const r = await fusionar(d, true);
-  Nube.programar();
+  Nube.guardar();
   return r.html;
 }
 
@@ -903,14 +992,15 @@ const avisoRepetido = codigo => `Atención: el número ${codigo} está en dos fa
 async function fusionar(d, interactivo) {
   if (d?.app !== FORMATO_COPIA || !Array.isArray(d.clientes) || !Array.isArray(d.facturas)) throw new Error('El archivo no es una copia de esta app.');
 
-  const [locClientes, locFacturas, emisor, serie, locElim] = await Promise.all([
-    DB.all('clientes'), DB.all('facturas'), getAjuste('emisor'), getAjuste('serie'), getAjuste('eliminados')]);
+  const [locClientes, locFacturas, locPresupuestos, emisor, serie, locElim] = await Promise.all([
+    DB.all('clientes'), DB.all('facturas'), DB.all('presupuestos'), getAjuste('emisor'), getAjuste('serie'), getAjuste('eliminados')]);
   const remElim = d.eliminados || {};
   const eliminados = { ...(locElim || {}), ...remElim };
   const locC = new Map(locClientes.map(c => [c.id, c]));
   const locF = new Map(locFacturas.map(f => [f.id, f]));
-  const putC = [], putF = [], conflictos = [];
-  let nC = 0, aC = 0, nF = 0, aF = 0;
+  const locP = new Map(locPresupuestos.map(p => [p.id, p]));
+  const putC = [], putF = [], putP = [], conflictos = [];
+  let nC = 0, aC = 0, nF = 0, aF = 0, nP = 0, aP = 0;
 
   for (const c of d.clientes) {
     if (!c?.id || !c.nombre || eliminados[c.id]) continue;
@@ -927,9 +1017,17 @@ async function fusionar(d, interactivo) {
     else if (l.estado === 'emitida' && f.estado === 'emitida' && l.hash !== f.hash) conflictos.push(l.codigo);
   }
 
-  // Lo que se eliminó en otro dispositivo: borradores y clientes sin facturas
+  for (const p of d.presupuestos || []) { // las copias de versiones anteriores no traen presupuestos
+    if (!p?.id || !Array.isArray(p.lineas) || eliminados[p.id]) continue;
+    const l = locP.get(p.id);
+    if (!l) { putP.push(p); nP++; } else if ((p.actualizado || '') > (l.actualizado || '')) { putP.push(p); aP++; }
+  }
+
+  // Lo que se eliminó en otro dispositivo: borradores, presupuestos y clientes sin facturas
   const final = new Map(locF); putF.forEach(f => final.set(f.id, f));
-  const conFacturas = new Set([...final.values()].filter(f => f.estado === 'emitida').map(f => f.clienteId));
+  const borrarP = locPresupuestos.filter(p => remElim[p.id]).map(p => p.id);
+  const presFinal = new Map(locP); putP.forEach(p => presFinal.set(p.id, p)); borrarP.forEach(id => presFinal.delete(id));
+  const conFacturas = new Set([...[...final.values()].filter(f => f.estado === 'emitida'), ...presFinal.values()].map(f => f.clienteId));
   const borrarF = locFacturas.filter(f => remElim[f.id] && f.estado === 'borrador').map(f => f.id);
   const borrarC = locClientes.filter(c => remElim[c.id] && !conFacturas.has(c.id)).map(c => c.id);
   borrarF.forEach(id => final.delete(id));
@@ -954,23 +1052,24 @@ async function fusionar(d, interactivo) {
   if (d.serie?.serie && (!serie || (d.serie.actualizado || '') > (serie.actualizado || ''))) await setAjuste('serie', d.serie);
 
   if (canon(eliminados) !== canon(locElim || {})) await setAjuste('eliminados', eliminados);
-  await DB.putMany({ clientes: putC, facturas: putF });
+  await DB.putMany({ clientes: putC, facturas: putF, presupuestos: putP });
   for (const id of borrarF) await DB.del('facturas', id);
+  for (const id of borrarP) await DB.del('presupuestos', id);
   for (const id of borrarC) await DB.del('clientes', id);
 
   const html = [
-    `<div class="okline">Importado: ${nC} clientes nuevos, ${aC} actualizados, ${nF} facturas nuevas, ${aF} actualizadas.</div>`,
+    `<div class="okline">Importado: ${nC} clientes nuevos, ${aC} actualizados, ${nF} facturas nuevas, ${aF} actualizadas, ${nP} presupuestos nuevos, ${aP} actualizados.</div>`,
     ...conflictos.map(c => `<div class="badline">La factura ${esc(c)} es distinta en la copia y en este dispositivo. Se ha mantenido la de este dispositivo.</div>`),
     ...[...repetidos].map(c => `<div class="badline">${esc(avisoRepetido(c))}</div>`),
   ].join('');
-  return { html, cambios: nC + aC + nF + aF + borrarF.length + borrarC.length, repetidos: [...repetidos] };
+  return { html, cambios: nC + aC + nF + aF + nP + aP + borrarF.length + borrarC.length + borrarP.length, repetidos: [...repetidos] };
 }
 
 /* ============================================================
    Google Drive: los datos van del dispositivo al Drive del usuario, sin servidor intermedio
    ============================================================ */
 const Nube = (() => {
-  let cliente = null, esperando = null, enCurso = null, timer = null, hint = '';
+  let cliente = null, esperando = null, timer = null, hint = '';
   const configurada = () => !!GOOGLE_CLIENT_ID;
 
   // El permiso de Google dura una hora y se queda solo en este dispositivo
@@ -1022,39 +1121,44 @@ const Nube = (() => {
     return r;
   }
 
-  async function sincronizar(token = leerToken()) {
-    if (enCurso) return enCurso;
-    enCurso = (async () => {
-      if (!token) throw Object.assign(new Error('La sesión de Google ha caducado. Vuelve a entrar.'), { caducado: true });
-      const est = (await getAjuste('nube')) || {};
-      let id = est.fileId || null, remoto = null;
-      if (id) {
-        try { remoto = await (await api(token, `${GAPI}/drive/v3/files/${id}?alt=media`)).json(); }
-        catch (e) { if (e.status === 404) id = null; else throw e; }
-      }
-      if (!id) {
-        const q = encodeURIComponent(`name = '${NUBE_NOMBRE}' and trashed = false`);
-        const l = await (await api(token, `${GAPI}/drive/v3/files?q=${q}&orderBy=modifiedTime desc&fields=files(id)&spaces=drive`)).json();
-        id = l.files?.[0]?.id || null;
-        if (id) remoto = await (await api(token, `${GAPI}/drive/v3/files/${id}?alt=media`)).json();
-      }
-      const resultado = remoto ? await fusionar(remoto, false) : { cambios: 0, repetidos: [] };
-      const marca = ahora(); // lo cambiado después de este momento quedará pendiente para la próxima vez
-      const cuerpo = JSON.stringify(await datosCopia());
-      if (id) {
-        await api(token, `${GAPI}/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: cuerpo });
-      } else {
-        const b = 'facturas' + uuid().replace(/-/g, '');
-        const meta = JSON.stringify({ name: NUBE_NOMBRE, mimeType: 'application/json' });
-        const body = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${b}\r\nContent-Type: application/json\r\n\r\n${cuerpo}\r\n--${b}--`;
-        id = (await (await api(token, `${GAPI}/upload/drive/v3/files?uploadType=multipart&fields=id`, {
-          method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${b}` }, body })).json()).id;
-      }
-      await setAjuste('nube', { ...est, fileId: id, ultimaSync: marca });
-      await setAjuste('ultimaCopia', marca);
-      return resultado;
-    })();
-    try { return await enCurso; } finally { enCurso = null; }
+  // Las sincronizaciones van en fila: un cambio hecho mientras otra está en curso se sube en la siguiente
+  let cola = Promise.resolve(), enFila = 0;
+  function sincronizar(token) {
+    if (enFila > 1) return cola; // ya hay una esperando, que incluirá este cambio
+    enFila++;
+    const p = cola.catch(() => {}).then(() => sincronizarUna(token || leerToken())).finally(() => { enFila--; });
+    cola = p;
+    return p;
+  }
+  async function sincronizarUna(token) {
+    if (!token) throw Object.assign(new Error('La sesión de Google ha caducado. Vuelve a entrar.'), { caducado: true });
+    const est = (await getAjuste('nube')) || {};
+    let id = est.fileId || null, remoto = null;
+    if (id) {
+      try { remoto = await (await api(token, `${GAPI}/drive/v3/files/${id}?alt=media`)).json(); }
+      catch (e) { if (e.status === 404) id = null; else throw e; }
+    }
+    if (!id) {
+      const q = encodeURIComponent(`name = '${NUBE_NOMBRE}' and trashed = false`);
+      const l = await (await api(token, `${GAPI}/drive/v3/files?q=${q}&orderBy=modifiedTime desc&fields=files(id)&spaces=drive`)).json();
+      id = l.files?.[0]?.id || null;
+      if (id) remoto = await (await api(token, `${GAPI}/drive/v3/files/${id}?alt=media`)).json();
+    }
+    const resultado = remoto ? await fusionar(remoto, false) : { cambios: 0, repetidos: [] };
+    const marca = ahora(); // lo cambiado después de este momento quedará pendiente para la próxima vez
+    const cuerpo = JSON.stringify(await datosCopia());
+    if (id) {
+      await api(token, `${GAPI}/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: cuerpo });
+    } else {
+      const b = 'facturas' + uuid().replace(/-/g, '');
+      const meta = JSON.stringify({ name: NUBE_NOMBRE, mimeType: 'application/json' });
+      const body = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${b}\r\nContent-Type: application/json\r\n\r\n${cuerpo}\r\n--${b}--`;
+      id = (await (await api(token, `${GAPI}/upload/drive/v3/files?uploadType=multipart&fields=id`, {
+        method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${b}` }, body })).json()).id;
+    }
+    await setAjuste('nube', { ...est, fileId: id, ultimaSync: marca });
+    await setAjuste('ultimaCopia', marca);
+    return resultado;
   }
 
   // Entrar con Google (desde un toque): comprueba la cuenta, carga los datos de su Drive y sube lo que falte
@@ -1075,7 +1179,8 @@ const Nube = (() => {
     }
     hint = email;
     await setAjuste('nube', { ...(est.email === email ? est : {}), email, nombre: u.displayName || '' });
-    return sincronizar(token);
+    const r = await sincronizar(token);
+    return { ...r, cambioCuenta: !!est.email && est.email !== email };
   }
   async function sincronizarConToque() { // desde un toque
     const token = leerToken() || await pedirToken(false);
@@ -1091,16 +1196,76 @@ const Nube = (() => {
   // Sin cuenta conectada y permiso vigente no se puede usar la app
   const sesionActiva = async () => configurada() && !!leerToken() && !!(await getAjuste('nube'))?.email;
 
-  const enLista = () => ['', '#/facturas', '#/clientes'].includes(location.hash);
-  // Tras un cambio local: sube en segundo plano
-  function programar() {
-    clearTimeout(timer);
-    timer = setTimeout(async () => {
-      if (!navigator.onLine) return;
-      try { await sincronizar(); if (enLista()) router(); }
-      catch (e) { console.warn(e); if (e.caducado) router(); }
-    }, 1500);
+  const enLista = () => ['', '#/facturas', '#/presupuestos', '#/clientes'].includes(location.hash);
+
+  /* ---- Guardar en Drive después de cada cambio ---- */
+  let estado = 'guardado';
+  function pintarEstado(e) {
+    estado = e;
+    const el = $('#estado-guardado');
+    if (!el) return;
+    el.dataset.estado = e;
+    el.textContent = { guardando: 'Guardando…', guardado: 'Guardado ✓', pendiente: 'Guardando…', error: 'Sin guardar' }[e];
   }
+  // Llamar tras cada cambio (cliente, factura, presupuesto, ajustes). Si la sesión ha caducado, la pide antes de seguir.
+  async function guardar() {
+    clearTimeout(timer);
+    pintarEstado('guardando');
+    try {
+      const r = leerToken() ? await sincronizar() : await pedirSesion();
+      pintarEstado('guardado');
+      if (r?.repetidos?.length) toast(avisoRepetido(r.repetidos[0]), 'Entendido', () => {}, true);
+      return r;
+    } catch (e) {
+      console.warn(e);
+      if (e.caducado) return guardar(); // al volver a sincronizar sin permiso, se pedirá la sesión
+      pintarEstado('error');
+      toast('No se ha podido guardar en Google Drive. Revisa la conexión a internet.', 'Reintentar', () => guardar(), true);
+      return null;
+    }
+  }
+  // Para lo que se escribe poco a poco (un borrador): guarda cuando se deja de escribir unos segundos
+  function programar() {
+    pintarEstado('pendiente');
+    clearTimeout(timer);
+    timer = setTimeout(guardar, 3000);
+  }
+  const hayCambiosSinGuardar = () => estado !== 'guardado';
+
+  // Ventana que bloquea la app hasta volver a entrar con Google
+  let sesionPedida = null;
+  function pedirSesion() {
+    if (sesionPedida) return sesionPedida;
+    sesionPedida = new Promise(res => {
+      const m = document.createElement('div');
+      m.className = 'modal';
+      m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true'); m.setAttribute('aria-labelledby', 'modal-titulo');
+      m.innerHTML = `<div class="modal-caja">
+        <h2 id="modal-titulo">Vuelve a entrar para guardar</h2>
+        <p>Por seguridad, Google pide entrar otra vez cada hora. Lo que estabas haciendo no se ha perdido: toca el botón y se guardará.</p>
+        <button type="button" class="primary grande" id="modal-entrar">Entrar con Google</button>
+        <div class="res small" style="margin-top:12px"></div></div>`;
+      document.body.append(m);
+      const boton = $('#modal-entrar', m);
+      boton.focus();
+      prepararCliente().catch(err => { $('.res', m).innerHTML = `<span class="badline">${esc(err.message)}</span>`; });
+      boton.onclick = () => {
+        const entrando = entrar(); // en el mismo toque, para que Safari deje abrir la ventana de Google
+        boton.disabled = true; boton.textContent = 'Entrando…';
+        entrando.then(r => {
+          m.remove(); sesionPedida = null; pintarEstado('guardado');
+          toast('Sesión renovada. Todo guardado.');
+          res(r);
+          if (r.cambioCuenta || enLista()) router(); // en un formulario abierto no se repinta, para no perder lo escrito
+        }).catch(err => {
+          $('.res', m).innerHTML = `<span class="badline">${esc(err.message)}</span>`;
+          boton.disabled = false; boton.textContent = 'Entrar con Google';
+        });
+      };
+    });
+    return sesionPedida;
+  }
+
   // Al abrir la app con sesión: trae lo último de Drive
   async function iniciar() {
     const est = await getAjuste('nube');
@@ -1108,14 +1273,16 @@ const Nube = (() => {
     if (!configurada() || !navigator.onLine) return;
     prepararCliente().catch(() => {});
     if (!leerToken()) return;
-    try { const r = await sincronizar(); if (r.cambios && enLista()) router(); }
+    try { const r = await sincronizar(); pintarEstado('guardado'); if (r.cambios && enLista()) router(); }
     catch (e) { console.warn(e); if (e.caducado) router(); }
   }
-  window.addEventListener('online', iniciar);
-  // El permiso dura una hora: cuando caduca, se vuelve a la pantalla de entrar (el borrador abierto ya está guardado)
-  setInterval(async () => { if (!$('#entrar') && !(await sesionActiva())) router(); }, 30000);
+  window.addEventListener('online', () => { if (estado === 'error') guardar(); else iniciar(); });
+  // El permiso dura una hora: cuando caduca, se pide entrar otra vez sin perder la pantalla en la que se estaba
+  setInterval(async () => { if (!$('#entrar') && !sesionPedida && !(await sesionActiva())) pedirSesion(); }, 30000);
+  // Avisa si se cierra la app con algo sin subir
+  window.addEventListener('beforeunload', e => { if (hayCambiosSinGuardar()) e.preventDefault(); });
 
-  return { configurada, entrar, sincronizar, sincronizarConToque, asegurarPermiso, cerrarSesion, sesionActiva, programar, iniciar, prepararCliente };
+  return { configurada, entrar, sincronizar, sincronizarConToque, asegurarPermiso, cerrarSesion, sesionActiva, guardar, programar, pintarEstado, iniciar, prepararCliente };
 })();
 
 async function vistaEntrar() {
@@ -1159,7 +1326,7 @@ async function router() {
   const params = new URLSearchParams(query || '');
   if (!(await Nube.sesionActiva())) { await vistaEntrar(); window.scrollTo(0, 0); return; }
   document.body.classList.remove('sin-sesion');
-  const seccion = { factura: 'facturas', cliente: 'clientes' }[partes[0]] || partes[0] || 'facturas';
+  const seccion = { factura: 'facturas', presupuesto: 'presupuestos', cliente: 'clientes' }[partes[0]] || partes[0] || 'facturas';
   $$('.tabs a').forEach(a => { if (a.dataset.tab === seccion) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
 
   try {
@@ -1167,6 +1334,10 @@ async function router() {
       case 'factura':
         if (partes[1] === 'nueva') return await crearBorrador({ clienteId: params.get('cliente') || '' });
         await vistaFactura(partes[1], partes[2]); break;
+      case 'presupuesto':
+        if (partes[1] === 'nuevo') return await crearPresupuesto({ clienteId: params.get('cliente') || '' });
+        await vistaPresupuesto(partes[1]); break;
+      case 'presupuestos': await vistaPresupuestos(); break;
       case 'clientes': await vistaClientes(); break;
       case 'cliente': await vistaCliente(partes[1], params); break;
       case 'ajustes': await vistaAjustes(); break;

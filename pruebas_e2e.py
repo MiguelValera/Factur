@@ -146,6 +146,35 @@ def main():
         A2.goto(U + '#/clientes'); A2.wait_for_selector('h1')
         assert 'Aún no hay clientes' in A2.inner_text('#app')
 
+        print('7. Presupuesto: se guarda en Drive, se imprime y se pasa a factura')
+        P = dispositivo(b, U, errores, drive); entrar(P, U)
+        P.goto(U + '#/presupuesto/nuevo'); P.wait_for_selector('#cliente')
+        assert f'PRE-{anio}-0001' in P.inner_text('h1')
+        P.select_option('#cliente', index=1)
+        P.fill('.line [data-f=concepto]', 'Embrague'); P.fill('.line [data-f=precio]', '400'); P.wait_for_timeout(4500)
+        pres = drive.datos()['presupuestos']
+        assert len(pres) == 1 and pres[0]['lineas'][0]['concepto'] == 'Embrague', 'lo escrito se sube solo'
+        P.click('#ver'); assert 'Presupuesto' in P.inner_text('#preview .doc-title') and 'Válido hasta' in P.inner_text('#preview')
+        P.click('#a-factura'); P.wait_for_selector('#emitir')
+        assert P.input_value('.line [data-f=concepto]') == 'Embrague'
+        P.click('#emitir'); P.wait_for_selector('.stamp:not(.draft)')
+        P.goto(U + '#/presupuestos'); P.wait_for_selector('.list')
+        assert 'Pasado a factura' in P.inner_text('.list')
+
+        print('8. Si se pierde la sesión al guardar, se pide entrar y se guarda')
+        P.evaluate("localStorage.removeItem('nube-token')")
+        P.goto(U + '#/facturas')  # navegar sin sesión lleva a la pantalla de entrar
+        P.wait_for_selector('#entrar:not([disabled])'); P.click('#entrar'); P.wait_for_selector('text=Nueva factura')
+        nuevo_cliente(P, U, 'Cliente Sin Sesion', '00000000T')
+        P.wait_for_selector('text=Cliente Sin Sesion'); P.click('text=Cliente Sin Sesion'); P.wait_for_selector('#nombre')
+        P.evaluate("localStorage.removeItem('nube-token')")
+        P.fill('#telefono', '600000000'); P.click('#form button[type=submit]')
+        P.wait_for_selector('.modal #modal-entrar'); P.click('#modal-entrar'); P.wait_for_selector('.modal', state='detached')
+        P.wait_for_timeout(500)
+        c = [x for x in drive.datos()['clientes'] if x['nombre'] == 'Cliente Sin Sesion'][0]
+        assert c.get('telefono') == '600000000', 'el cambio hecho sin sesión se guarda al volver a entrar'
+        assert 'Guardado' in P.inner_text('#estado-guardado')
+
         b.close()
     srv.shutdown()
     assert not errores, errores

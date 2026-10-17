@@ -1,7 +1,7 @@
 {
   "name": "Facturas",
   "short_name": "Facturas",
-  "description": "Facturación sin conexión para un negocio pequeño",
+  "description": "Facturas y presupuestos para un negocio pequeño",
   "lang": "es",
   "start_url": "./",
   "scope": "./",
