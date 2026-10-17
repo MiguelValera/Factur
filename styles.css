@@ -228,3 +228,8 @@ fieldset { border: 0; padding: 0; margin: 0; }
   #print-area .doc-head { padding-right: 0; }
   #print-area .doc td { border-bottom-color: #bbb; }
 }
+
+/* Pantalla de entrar con Google: sin pestañas hasta que haya sesión */
+.sin-sesion .tabs { display: none; }
+.login { max-width: 420px; margin: 12vh auto 0; text-align: center; }
+.login p { margin: 12px 0 20px; }

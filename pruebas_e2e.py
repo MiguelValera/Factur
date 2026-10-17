@@ -21,11 +21,13 @@ def servidor():
 GIS = """window.google={accounts:{oauth2:{initTokenClient(c){return{requestAccessToken(){setTimeout(()=>c.callback({access_token:'tok',expires_in:3600}),30)}}},revoke(t,cb){cb&&cb()}}}};"""
 
 class DriveFalso:
-    def __init__(self): self.archivos = {}
+    """Un Google Drive en memoria. Cada instancia es una cuenta de Google distinta."""
+    def __init__(self, email='taller@example.com'): self.archivos, self.email = {}, email
+    def datos(self): return json.loads(self.archivos['F1'])
     def __call__(self, route):
         r, u = route.request, route.request.url
         assert r.headers.get('authorization') == 'Bearer tok'
-        if '/about' in u: return route.fulfill(json={'user': {'emailAddress': 'taller@gmail.com', 'displayName': 'Taller'}})
+        if '/about' in u: return route.fulfill(json={'user': {'emailAddress': self.email, 'displayName': 'Taller'}})
         m = re.search(r'/files/([^/?]+)', u)
         if r.method == 'GET' and m and 'alt=media' in u:
             f = self.archivos.get(m.group(1))
@@ -38,22 +40,23 @@ class DriveFalso:
             self.archivos[m.group(1)] = r.post_data
             return route.fulfill(json={'id': m.group(1)})
 
-def dispositivo(b, U, errores, drive=None):
+def dispositivo(b, U, errores, drive):
     pg = b.new_context(viewport={'width': 390, 'height': 844}, accept_downloads=True).new_page()
     pg.on('dialog', lambda d: d.accept())
     pg.on('pageerror', lambda e: errores.append(str(e)))
-    if drive:
-        def app_js(route):  # activa Google con un ID de prueba sin tocar el archivo
-            body = route.fetch().text().replace("const GOOGLE_CLIENT_ID = '';", "const GOOGLE_CLIENT_ID = 'prueba';")
-            route.fulfill(body=body, content_type='application/javascript')
-        pg.route('**/app.js', app_js)
-        pg.route('https://accounts.google.com/**', lambda r: r.fulfill(body=GIS, content_type='application/javascript'))
-        pg.route('https://www.googleapis.com/**', drive)
+    pg.route('https://accounts.google.com/**', lambda r: r.fulfill(body=GIS, content_type='application/javascript'))
+    pg.route('https://www.googleapis.com/**', drive)
     return pg
 
-def configurar(pg, U, serie):
+def entrar(pg, U):
+    pg.goto(U); pg.wait_for_selector('#entrar:not([disabled])')
+    assert not pg.is_visible('.tabs'), 'sin sesión no deben verse las pestañas'
+    pg.click('#entrar'); pg.wait_for_selector('.tabs a', state='visible')
+
+def configurar(pg, U, serie=None):
     pg.goto(U + '#/ajustes'); pg.wait_for_selector('#serie')
-    pg.fill('#serie', serie); pg.click('#f-serie button[type=submit]'); pg.wait_for_timeout(200)
+    if serie:
+        pg.fill('#serie', serie); pg.click('#f-serie button[type=submit]'); pg.wait_for_timeout(200)
     if not pg.input_value('#e-nombre'):
         pg.fill('#e-nombre', 'Taller de Prueba S.L.'); pg.fill('#e-nif', 'B12345674'); pg.fill('#e-direccion', 'Calle Falsa 1')
         pg.click('#f-emisor button[type=submit]'); pg.wait_for_timeout(300)
@@ -77,11 +80,18 @@ def verificar(pg, U):
 def main():
     srv, U = servidor()
     errores = []
+    anio = __import__('datetime').date.today().year
     with sync_playwright() as p:
         b = p.chromium.launch()
 
-        print('1. Factura, IVA mixto, datos adicionales y rectificativa')
-        A = dispositivo(b, U, errores); configurar(A, U, 'M'); nuevo_cliente(A, U)
+        print('1. Sin sesión de Google no se puede usar la app')
+        drive = DriveFalso()
+        A = dispositivo(b, U, errores, drive)
+        A.goto(U + '#/clientes'); A.wait_for_selector('#entrar')
+        assert 'Nuevo cliente' not in A.inner_text('#app')
+
+        print('2. Factura, IVA mixto, datos adicionales y rectificativa')
+        entrar(A, U); configurar(A, U, 'F'); nuevo_cliente(A, U)
         A.goto(U + '#/factura/nueva'); A.wait_for_selector('#cliente'); A.select_option('#cliente', index=1)
         A.fill('.extra [data-e=valor]', '0000TST')
         A.fill('.line [data-f=concepto]', 'Pieza'); A.fill('.line [data-f=cantidad]', '2'); A.fill('.line [data-f=precio]', '19,99')
@@ -90,35 +100,51 @@ def main():
         A.wait_for_timeout(500)
         assert '58,78' in A.inner_text('#totales'), A.inner_text('#totales')
         A.click('#emitir'); A.wait_for_selector('.stamp:not(.draft)')
-        assert 'M-' in A.inner_text('h1') and '0000TST' in A.inner_text('.doc-extras')
+        assert f'F-{anio}-0001' in A.inner_text('h1') and '0000TST' in A.inner_text('.doc-extras')
         A.click('text=Crear rectificativa'); A.wait_for_selector('#motivo'); A.fill('#motivo', 'Devolución')
         A.wait_for_timeout(500); A.click('#emitir'); A.wait_for_selector('.stamp:not(.draft)')
-        assert A.inner_text('h1').startswith('Rectificativa MR-')
+        assert A.inner_text('h1').startswith(f'Rectificativa FR-{anio}-0001')
         assert '2 facturas correctas' in verificar(A, U)
+        assert len(drive.datos()['facturas']) == 2, 'cada factura emitida se sube a Drive en el acto'
 
-        print('2. Copia manual e importación en otro dispositivo')
-        with A.expect_download() as d: A.click('#exportar')
+        print('3. Otro dispositivo con la misma cuenta: misma serie y numeración seguida')
+        B = dispositivo(b, U, errores, drive); entrar(B, U)
+        B.goto(U + '#/ajustes'); B.wait_for_selector('#serie')
+        assert B.input_value('#serie') == 'F' and B.input_value('#e-nombre'), 'la serie y el emisor vienen de Drive'
+        assert f'F-{anio}-0002' in emitir(B, U, 'Frenos', '60')
+        assert f'F-{anio}-0003' in emitir(A, U, 'Aceite', '30'), 'antes de numerar se trae lo último de Drive'
+        B.goto(U + '#/ajustes'); B.wait_for_selector('#nube-sync'); B.click('#nube-sync'); B.wait_for_timeout(1000)
+        v = verificar(B, U)
+        assert 'Serie F: 4 facturas correctas' in v, v
+
+        print('4. Al caducar el permiso de Google se vuelve a pedir')
+        A.evaluate("localStorage.removeItem('nube-token')")
+        A.goto(U + '#/clientes'); A.wait_for_selector('#entrar')
+        assert 'caducado' in A.inner_text('#app')
+        A.click('#entrar'); A.wait_for_selector('text=Nuevo cliente')
+
+        print('5. Copia manual: exportar e importar en otra cuenta')
+        with A.expect_download() as d:
+            A.goto(U + '#/ajustes'); A.wait_for_selector('#exportar'); A.click('#exportar')
         ruta = os.path.join(tempfile.mkdtemp(), 'copia.json'); d.value.save_as(ruta)
-        B = dispositivo(b, U, errores)
-        B.on('dialog', lambda d: None)
-        B.goto(U + '#/ajustes'); B.wait_for_selector('#importar', state='attached')
-        B.set_input_files('#importar', ruta); B.wait_for_timeout(800)
-        assert '2 facturas nuevas' in B.inner_text('#res-import')
-        configurar(B, U, 'P')
-        assert 'P-' in emitir(B, U, 'Pieza', '15')
+        otra = DriveFalso('otra@example.com')
+        C = dispositivo(b, U, errores, otra); entrar(C, U)
+        C.goto(U + '#/ajustes'); C.wait_for_selector('#importar', state='attached')
+        C.set_input_files('#importar', ruta); C.wait_for_timeout(800)
+        assert '4 facturas nuevas' in C.inner_text('#res-import')
+        C.wait_for_timeout(2500)
+        assert len(otra.datos()['facturas']) == 4, 'lo importado se sube a Drive'
 
-        print('3. Sincronización con Google Drive (simulado)')
-        drive = DriveFalso()
-        C = dispositivo(b, U, errores, drive); configurar(C, U, 'C')
-        C.goto(U + '#/ajustes'); C.wait_for_selector('#nube-conectar'); C.click('#nube-conectar'); C.wait_for_selector('#nube-sync')
-        nuevo_cliente(C, U); emitir(C, U, 'Revisión', '100', '1111AAA'); C.wait_for_timeout(2500)
-        assert len(json.loads(drive.archivos['F1'])['facturas']) == 1
-        D = dispositivo(b, U, errores, drive)
-        D.goto(U + '#/ajustes'); D.wait_for_selector('#nube-conectar'); D.click('#nube-conectar'); D.wait_for_selector('#nube-sync')
-        configurar(D, U, 'D'); emitir(D, U, 'Frenos', '60'); D.wait_for_timeout(2500)
-        C.goto(U + '#/ajustes'); C.wait_for_selector('#nube-sync'); C.click('#nube-sync'); C.wait_for_timeout(1000)
-        v = verificar(C, U)
-        assert 'Serie C: 1' in v and 'Serie D: 1' in v, v
+        print('6. Cambiar de cuenta en un dispositivo no mezcla los datos')
+        A2 = A.context.new_page(); A2.on('dialog', lambda d: d.accept()); A2.on('pageerror', lambda e: errores.append(str(e)))
+        A.close()
+        vacia = DriveFalso('nueva@example.com')
+        A2.route('https://accounts.google.com/**', lambda r: r.fulfill(body=GIS, content_type='application/javascript'))
+        A2.route('https://www.googleapis.com/**', vacia)
+        A2.goto(U); A2.evaluate("localStorage.removeItem('nube-token')")
+        entrar(A2, U)
+        A2.goto(U + '#/clientes'); A2.wait_for_selector('h1')
+        assert 'Aún no hay clientes' in A2.inner_text('#app')
 
         b.close()
     srv.shutdown()

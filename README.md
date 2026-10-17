@@ -1,10 +1,10 @@
 # Facturas
 
-App de facturación sin conexión para un negocio pequeño. Funciona en móvil y ordenador, guarda los datos solo en cada dispositivo y no necesita servidor.
+App de facturación para un negocio pequeño. Funciona en móvil y ordenador y no necesita servidor: se entra con una cuenta de Google y los clientes y las facturas se guardan en el Google Drive de esa cuenta, compartidos entre todos los dispositivos.
 
 ## Publicarla en GitHub Pages
 
-1. Crea un repositorio **público** en GitHub (Pages es gratis en repos públicos; en privados necesita un plan de pago). El repo solo contiene el código: los clientes y las facturas nunca salen del dispositivo.
+1. Crea un repositorio **público** en GitHub (Pages es gratis en repos públicos; en privados necesita un plan de pago). El repo solo contiene el código: los clientes y las facturas van del dispositivo al Google Drive de la cuenta, nunca al repositorio.
 2. Sube todos los archivos de esta carpeta a la raíz del repo.
 3. En el repo: Settings → Pages → Source: "Deploy from a branch", rama `main`, carpeta `/ (root)`.
 4. En un par de minutos estará en `https://TU-USUARIO.github.io/NOMBRE-REPO/`.
@@ -15,24 +15,22 @@ App de facturación sin conexión para un negocio pequeño. Funciona en móvil y
 - **Android:** Chrome → menú → "Instalar app".
 - **Ordenador:** Chrome o Edge → icono de instalar en la barra de direcciones.
 
-Abre la app una vez con conexión; a partir de ahí funciona sin ella.
+Hace falta conexión para entrar con Google y guardar en Drive.
 
 ## Primer uso
 
-1. Ajustes → elige una serie distinta por dispositivo (por ejemplo M en el móvil, P en el portátil).
-2. Rellena tus datos de facturador.
-3. Añade clientes y factura.
+1. Entra con la cuenta de Google del negocio. En los demás dispositivos, entra con la misma cuenta.
+2. Ajustes → elige la serie de facturación (por ejemplo F). Es la misma para todos los dispositivos.
+3. Rellena tus datos de facturador.
+4. Añade clientes y factura.
 
 ## Copias de seguridad
 
-Ajustes → Exportar copia genera un archivo JSON con todo. Guárdalo en Google Drive o iCloud. La app avisa en la pantalla de facturas cuando hay cambios sin copia.
+Los datos se guardan solos en Google Drive. Además, Ajustes → Exportar copia genera un archivo JSON con todo, por si quieres una copia aparte. Al importar una copia, sus datos se suman a los de la cuenta sin duplicar.
 
-- **Pasar clientes a otro dispositivo:** importa allí la copia. Se suman sin duplicar.
-- **Si se rompe un dispositivo:** en el nuevo, importa la última copia y acepta usar la misma serie para seguir la numeración.
+## Configurar Google (una sola vez)
 
-## Guardado automático en Google Drive (opcional)
-
-Con esto, la app guarda los datos sola en el Google Drive de la cuenta que se conecte, y todos los dispositivos conectados a esa cuenta comparten clientes y facturas. No hay servidor: los datos van directamente del dispositivo al Drive.
+La app exige entrar con Google y guarda los datos en el Google Drive de esa cuenta. No hay servidor: los datos van directamente del dispositivo al Drive.
 
 Configuración (una sola vez, mejor desde un ordenador o con Safari en modo escritorio):
 
@@ -46,7 +44,7 @@ Configuración (una sola vez, mejor desde un ordenador o con Safari en modo escr
 
 El ID de cliente no es secreto: identifica la app ante Google pero no da acceso a ningún dato.
 
-Uso: Ajustes → Conectar con Google. El permiso de Google dura una hora; mientras está vigente, cada factura emitida o cliente guardado se sube solo. Cuando caduca, la pantalla de facturas muestra un botón "Sincronizar" que lo renueva con un toque. El archivo en Drive se llama "Facturas - datos (no borrar).json".
+Uso: al abrir la app, "Entrar con Google". El permiso de Google dura una hora; mientras está vigente, cada factura emitida o cliente guardado se sube solo. Cuando caduca, la app vuelve a la pantalla de entrar y se renueva con un toque. Antes de numerar cada factura, la app trae lo último de Drive para no repetir números entre dispositivos. El archivo en Drive se llama "Facturas - datos (no borrar).json".
 
 ## Actualizar la app
 
