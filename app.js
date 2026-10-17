@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 
 // Google Drive: pega aquí el ID de cliente OAuth de tu proyecto de Google Cloud (ver README).
 // No es secreto: identifica la app ante Google, pero no da acceso a ningún dato.
@@ -246,8 +246,8 @@ function docHtml(d) {
   const t = d.totales;
   const unTipo = t.desglose.length === 1;
   const filasIva = t.desglose.map(x => `
-    <tr><td>Base imponible${unTipo ? '' : ` al ${x.tipo} %`}</td><td class="num">${eur(x.base)}</td></tr>
-    <tr><td>IVA ${x.tipo} %</td><td class="num">${eur(x.cuota)}</td></tr>`).join('');
+    <tr><td>Base imponible${unTipo ? '' : ` al ${esc(x.tipo)} %`}</td><td class="num">${eur(x.base)}</td></tr>
+    <tr><td>IVA ${esc(x.tipo)} %</td><td class="num">${eur(x.cuota)}</td></tr>`).join('');
   const esPres = d.clase === 'presupuesto';
   const sello = esPres ? '' : d.borrador
     ? `<div class="stamp draft">Borrador</div>`
@@ -269,7 +269,7 @@ function docHtml(d) {
       <tbody>${d.lineas.map(l => {
         const b = baseLinea(l);
         return `<tr><td>${esc(l.concepto)}</td><td class="num">${fmtNum.format(parseNum(l.cantidad) || 0)}</td>
-          <td class="num">${fmtPrecio.format(parseNum(l.precio) || 0)}</td><td class="num">${l.iva} %</td>
+          <td class="num">${fmtPrecio.format(parseNum(l.precio) || 0)}</td><td class="num">${esc(l.iva)} %</td>
           <td class="num">${Number.isNaN(b) ? '—' : eur(b)}</td></tr>`;
       }).join('')}</tbody>
     </table></div>
@@ -323,7 +323,7 @@ async function vistaFacturas() {
     const nombre = f.estado === 'emitida' ? f.clienteSnap?.nombre : cli.get(f.clienteId)?.nombre;
     const total = f.estado === 'emitida' ? f.totales.total : calcTotales(f.lineas, f.retencionTipo).total;
     const chip = f.estado === 'borrador' ? '<span class="chip draft">Borrador</span>' : (f.tipo === 'R' ? '<span class="chip rect">Rectificativa</span>' : '');
-    return `<li><a class="item" href="#/factura/${f.id}" data-buscar="${esc([f.codigo, nombre, ...(f.extras || []).map(x => x.valor)].filter(Boolean).join(' ').toLowerCase())}">
+    return `<li><a class="item" href="#/factura/${esc(f.id)}" data-buscar="${esc([f.codigo, nombre, ...(f.extras || []).map(x => x.valor)].filter(Boolean).join(' ').toLowerCase())}">
       <span class="t">${esc(f.codigo || (f.tipo === 'R' ? 'Rectificativa sin emitir' : 'Factura sin emitir'))} ${chip}</span>
       <span class="num t">${eur(total)}</span>
       <span class="s">${esc(nombre || 'Sin cliente')}</span>
@@ -403,7 +403,7 @@ async function vistaPresupuestos() {
     ${presupuestos.length ? `<input class="search" type="search" placeholder="Buscar por número, cliente o matrícula" aria-label="Buscar presupuestos" id="buscar">
       <ul class="list">${presupuestos.map(p => {
         const nombre = cli.get(p.clienteId)?.nombre;
-        return `<li><a class="item" href="#/presupuesto/${p.id}" data-buscar="${esc([p.codigo, nombre, ...(p.extras || []).map(x => x.valor)].filter(Boolean).join(' ').toLowerCase())}">
+        return `<li><a class="item" href="#/presupuesto/${esc(p.id)}" data-buscar="${esc([p.codigo, nombre, ...(p.extras || []).map(x => x.valor)].filter(Boolean).join(' ').toLowerCase())}">
           <span class="t">${esc(p.codigo)} ${p.facturaId ? '<span class="chip">Pasado a factura</span>' : ''}</span>
           <span class="num t">${eur(calcTotales(p.lineas, p.retencionTipo).total)}</span>
           <span class="s">${esc(nombre || 'Sin cliente')}</span>
@@ -448,11 +448,11 @@ async function vistaEmitida(f) {
     ${html}
     <div class="row">
       <button type="button" class="primary" id="imprimir">Imprimir o guardar PDF</button>
-      ${f.tipo === 'F' ? `<a class="btn" href="#/factura/${f.id}/rectificar">Crear rectificativa</a>` : ''}
-      <a class="btn" href="#/factura/${f.id}/duplicar">Duplicar como borrador</a>
+      ${f.tipo === 'F' ? `<a class="btn" href="#/factura/${esc(f.id)}/rectificar">Crear rectificativa</a>` : ''}
+      <a class="btn" href="#/factura/${esc(f.id)}/duplicar">Duplicar como borrador</a>
     </div>
     ${rects.length ? `<h2>Rectificativas de esta factura</h2><ul class="list">${rects.map(r =>
-      `<li><a class="item" href="#/factura/${r.id}"><span class="t">${esc(r.codigo || 'Sin emitir')}</span><span class="num">${r.totales ? eur(r.totales.total) : ''}</span></a></li>`).join('')}</ul>` : ''}
+      `<li><a class="item" href="#/factura/${esc(r.id)}"><span class="t">${esc(r.codigo || 'Sin emitir')}</span><span class="num">${r.totales ? eur(r.totales.total) : ''}</span></a></li>`).join('')}</ul>` : ''}
     <p class="muted small" style="margin-top:20px">Una factura emitida no se puede modificar. Para corregirla, crea una rectificativa.</p>`;
   $('#imprimir').onclick = () => imprimir(docHtml(datosDocEmitida(f)), f.codigo);
 }
@@ -474,19 +474,19 @@ async function editorBorrador(f, esPres = false) {
   const valoresCliente = () => [...new Set(emitidas.filter(x => x.clienteId === f.clienteId)
     .flatMap(x => (x.extras || []).map(e => e.valor)).filter(Boolean))];
   const extraHtml = x => `
-    <div class="extra" data-id="${x.id}">
-      <div><label for="k-${x.id}">Dato</label><input id="k-${x.id}" data-e="clave" list="claves-extra" value="${esc(x.clave)}" placeholder="Matrícula" autocomplete="off"></div>
-      <div><label for="v-${x.id}">Valor</label><input id="v-${x.id}" data-e="valor" list="valores-extra" value="${esc(x.valor)}" placeholder="6363HJU" autocomplete="off"></div>
+    <div class="extra" data-id="${esc(x.id)}">
+      <div><label for="k-${esc(x.id)}">Dato</label><input id="k-${esc(x.id)}" data-e="clave" list="claves-extra" value="${esc(x.clave)}" placeholder="Matrícula" autocomplete="off"></div>
+      <div><label for="v-${esc(x.id)}">Valor</label><input id="v-${esc(x.id)}" data-e="valor" list="valores-extra" value="${esc(x.valor)}" placeholder="6363HJU" autocomplete="off"></div>
       <button type="button" class="ghost" data-quitar-extra aria-label="Quitar este dato">Quitar</button>
     </div>`;
   const pintarValores = () => { $('#valores-extra').innerHTML = valoresCliente().map(v => `<option value="${esc(v)}">`).join(''); };
 
   const lineaHtml = l => `
-    <div class="line" data-id="${l.id}">
-      <div class="c"><label for="c-${l.id}">Concepto</label><input id="c-${l.id}" data-f="concepto" list="conceptos" value="${esc(l.concepto)}" autocomplete="off"></div>
-      <div class="q"><label for="q-${l.id}">Cantidad</label><input id="q-${l.id}" data-f="cantidad" inputmode="decimal" value="${esc(l.cantidad)}"></div>
-      <div class="p"><label for="p-${l.id}">Precio sin IVA</label><input id="p-${l.id}" data-f="precio" inputmode="decimal" placeholder="0,00" value="${esc(l.precio)}"></div>
-      <div class="i"><label for="i-${l.id}">IVA</label><select id="i-${l.id}" data-f="iva">${IVA_TIPOS.map(t => `<option value="${t}"${+l.iva === t ? ' selected' : ''}>${t} %</option>`).join('')}</select></div>
+    <div class="line" data-id="${esc(l.id)}">
+      <div class="c"><label for="c-${esc(l.id)}">Concepto</label><input id="c-${esc(l.id)}" data-f="concepto" list="conceptos" value="${esc(l.concepto)}" autocomplete="off"></div>
+      <div class="q"><label for="q-${esc(l.id)}">Cantidad</label><input id="q-${esc(l.id)}" data-f="cantidad" inputmode="decimal" value="${esc(l.cantidad)}"></div>
+      <div class="p"><label for="p-${esc(l.id)}">Precio sin IVA</label><input id="p-${esc(l.id)}" data-f="precio" inputmode="decimal" placeholder="0,00" value="${esc(l.precio)}"></div>
+      <div class="i"><label for="i-${esc(l.id)}">IVA</label><select id="i-${esc(l.id)}" data-f="iva">${IVA_TIPOS.map(t => `<option value="${t}"${+l.iva === t ? ' selected' : ''}>${t} %</option>`).join('')}</select></div>
       <div class="b num" data-base></div>
       <div class="x"><button type="button" class="ghost" data-quitar aria-label="Quitar este concepto">Quitar</button></div>
     </div>`;
@@ -496,7 +496,7 @@ async function editorBorrador(f, esPres = false) {
     ${!emisor || (!serie && !esPres) ? `<div class="notice">Faltan tus datos de facturador${esPres ? '' : ' o la serie de facturación'}. <a href="#/ajustes">Complétalos en ajustes</a>.</div>` : ''}
     ${esPres && f.facturaId ? `<div class="notice">Este presupuesto ya se pasó a factura. <a href="#/factura/${esc(f.facturaId)}">Ver la factura</a></div>` : ''}
     <p class="muted">Lo que escribes se guarda solo.</p>
-    <form id="form" class="stack" autocomplete="off" onsubmit="return false">
+    <form id="form" class="stack" autocomplete="off">
       ${f.tipo === 'R' ? `
         <p>Rectifica la factura <strong>${esc(f.rectificaCodigo)}</strong>. Se han copiado sus conceptos en negativo: deja solo lo que corrige.</p>
         <div><label for="motivo">Motivo de la rectificación</label><textarea id="motivo" data-g="motivo" required>${esc(f.motivo)}</textarea></div>` : ''}
@@ -504,9 +504,9 @@ async function editorBorrador(f, esPres = false) {
         <label for="cliente">Cliente</label>
         <select id="cliente" data-g="clienteId">
           <option value="">Elige un cliente</option>
-          ${clientes.map(c => `<option value="${c.id}"${c.id === f.clienteId ? ' selected' : ''}>${esc(c.nombre)} (${esc(c.nif)})</option>`).join('')}
+          ${clientes.map(c => `<option value="${esc(c.id)}"${c.id === f.clienteId ? ' selected' : ''}>${esc(c.nombre)} (${esc(c.nif)})</option>`).join('')}
         </select>
-        <div class="hint"><a href="#/cliente/nuevo?volver=${f.id}${esPres ? '&tipo=presupuesto' : ''}">Añadir un cliente nuevo</a></div>
+        <div class="hint"><a href="#/cliente/nuevo?volver=${esc(f.id)}${esPres ? '&tipo=presupuesto' : ''}">Añadir un cliente nuevo</a></div>
       </div>
       <div>
         <h2>Datos adicionales</h2>
@@ -563,6 +563,7 @@ async function editorBorrador(f, esPres = false) {
   const programar = () => { clearTimeout(timer); guardarPendiente = guardar; timer = setTimeout(guardar, 400); Nube.programar(); };
 
   const form = $('#form');
+  form.addEventListener('submit', e => e.preventDefault()); // Intro en un campo no debe enviar nada
   form.addEventListener('input', e => {
     const el = e.target;
     if (el.dataset.g) f[el.dataset.g] = el.value;
@@ -607,7 +608,7 @@ async function editorBorrador(f, esPres = false) {
     const x = nuevoExtra();
     f.extras.push(x);
     $('#extras').insertAdjacentHTML('beforeend', extraHtml(x));
-    $(`#k-${x.id}`).focus();
+    $(`#k-${esc(x.id)}`).focus();
     programar();
   };
   pintarValores();
@@ -615,7 +616,7 @@ async function editorBorrador(f, esPres = false) {
     const l = nuevaLinea();
     f.lineas.push(l);
     $('#lineas').insertAdjacentHTML('beforeend', lineaHtml(l));
-    $(`#c-${l.id}`).focus();
+    $(`#c-${esc(l.id)}`).focus();
     pintarTotales(); programar();
   };
   const datosDoc = () => ({ ...f, emisor, cliente: clientes.find(c => c.id === f.clienteId),
@@ -739,7 +740,7 @@ async function vistaClientes() {
   app.innerHTML = `
     <div class="head-row"><h1>Clientes</h1><a class="btn primary" href="#/cliente/nuevo">Nuevo cliente</a></div>
     ${clientes.length ? `<input class="search" type="search" placeholder="Buscar por nombre o NIF" aria-label="Buscar clientes" id="buscar">
-      <ul class="list">${clientes.map(c => `<li><a class="item" href="#/cliente/${c.id}" data-buscar="${esc((c.nombre + ' ' + c.nif).toLowerCase())}">
+      <ul class="list">${clientes.map(c => `<li><a class="item" href="#/cliente/${esc(c.id)}" data-buscar="${esc((c.nombre + ' ' + c.nif).toLowerCase())}">
         <span class="t">${esc(c.nombre)}</span><span class="s">${n.get(c.id) || 0} facturas</span>
         <span class="s">NIF ${esc(c.nif)}</span><span class="s">${esc(c.poblacion || '')}</span></a></li>`).join('')}</ul>`
       : `<p class="empty">Aún no hay clientes. Añade el primero para poder facturarle.</p>`}`;
@@ -776,7 +777,7 @@ async function vistaCliente(id, params) {
       <div class="row">
         <button type="submit" class="primary">Guardar cliente</button>
         <a class="btn" href="${volver ? esc(rutaVolver) : '#/clientes'}">Cancelar</a>
-        ${!nuevo ? `<a class="btn" href="#/factura/nueva?cliente=${c.id}">Hacerle una factura</a><a class="btn" href="#/presupuesto/nuevo?cliente=${c.id}">Hacerle un presupuesto</a>` : ''}
+        ${!nuevo ? `<a class="btn" href="#/factura/nueva?cliente=${esc(c.id)}">Hacerle una factura</a><a class="btn" href="#/presupuesto/nuevo?cliente=${esc(c.id)}">Hacerle un presupuesto</a>` : ''}
         ${!nuevo && !usado ? `<button type="button" class="danger" id="borrar">Eliminar cliente</button>` : ''}
       </div>
       ${usado ? `<p class="muted small">Este cliente tiene facturas o presupuestos, así que no se puede eliminar. Los cambios que hagas no alteran las facturas ya emitidas.</p>` : ''}
@@ -919,8 +920,10 @@ async function vistaAjustes() {
     });
   });
   $('#nube-salir').addEventListener('click', async () => {
-    if (!confirm('Para volver a usar la app tendrás que entrar otra vez con Google. ¿Cerrar sesión?')) return;
-    try { await Nube.sincronizar(); } catch {} // que no se quede nada sin subir
+    if (!confirm('Se quitarán los datos de este dispositivo (siguen guardados en Google Drive). Para volver a usar la app tendrás que entrar otra vez con Google. ¿Cerrar sesión?')) return;
+    try { await Nube.sincronizar(); } catch { // si no se pudo subir lo último, mejor no borrarlo de aquí
+      if (!confirm('No se han podido guardar en Google Drive los últimos cambios. Si cierras la sesión ahora, se perderán. ¿Cerrar de todas formas?')) return;
+    }
     await Nube.cerrarSesion();
     router();
   });
@@ -985,6 +988,17 @@ async function importarCopia(file) {
   return r.html;
 }
 
+// Lo que llega de una copia o de Drive se comprueba antes de guardarlo: un archivo manipulado
+// no debe poder colar código en la página a través de identificadores o tipos de IVA raros.
+const idOk = v => typeof v === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(v);
+const idOpcionalOk = v => v === undefined || v === null || v === '' || idOk(v);
+const lineasOk = ls => Array.isArray(ls) && ls.every(l => l && typeof l === 'object' && idOpcionalOk(l.id)
+  && typeof l.iva === 'number' && IVA_TIPOS.includes(l.iva));
+const extrasOk = ex => ex === undefined || (Array.isArray(ex) && ex.every(x => x && typeof x === 'object' && idOpcionalOk(x.id)));
+const totalesOk = t => t === undefined || (t && Array.isArray(t.desglose) && t.desglose.every(d => typeof d.tipo === 'number'));
+const documentoOk = d => d && typeof d === 'object' && idOk(d.id) && lineasOk(d.lineas) && extrasOk(d.extras) && totalesOk(d.totales)
+  && ['clienteId', 'rectificaId', 'facturaId', 'presupuestoId'].every(k => idOpcionalOk(d[k]));
+
 const avisoRepetido = codigo => `Atención: el número ${codigo} está en dos facturas distintas, emitidas a la vez en dos dispositivos. Consúltalo con tu gestor.`;
 
 // Mezcla una copia con los datos de este dispositivo sin duplicar nada.
@@ -1002,13 +1016,15 @@ async function fusionar(d, interactivo) {
   const putC = [], putF = [], putP = [], conflictos = [];
   let nC = 0, aC = 0, nF = 0, aF = 0, nP = 0, aP = 0;
 
+  let descartados = 0;
   for (const c of d.clientes) {
-    if (!c?.id || !c.nombre || eliminados[c.id]) continue;
+    if (!c || !idOk(c.id) || !c.nombre) { descartados++; continue; }
+    if (eliminados[c.id]) continue;
     const l = locC.get(c.id);
     if (!l) { putC.push(c); nC++; } else if ((c.actualizado || '') > (l.actualizado || '')) { putC.push(c); aC++; }
   }
   for (const f of d.facturas) {
-    if (!f?.id || !Array.isArray(f.lineas)) continue;
+    if (!documentoOk(f)) { descartados++; continue; }
     if (eliminados[f.id] && f.estado !== 'emitida') continue;
     const l = locF.get(f.id);
     if (!l) { putF.push(f); nF++; continue; }
@@ -1018,7 +1034,8 @@ async function fusionar(d, interactivo) {
   }
 
   for (const p of d.presupuestos || []) { // las copias de versiones anteriores no traen presupuestos
-    if (!p?.id || !Array.isArray(p.lineas) || eliminados[p.id]) continue;
+    if (!documentoOk(p)) { descartados++; continue; }
+    if (eliminados[p.id]) continue;
     const l = locP.get(p.id);
     if (!l) { putP.push(p); nP++; } else if ((p.actualizado || '') > (l.actualizado || '')) { putP.push(p); aP++; }
   }
@@ -1049,7 +1066,7 @@ async function fusionar(d, interactivo) {
       } else if ((d.emisor.actualizado || '') > (emisor.actualizado || '')) await setAjuste('emisor', d.emisor);
     }
   }
-  if (d.serie?.serie && (!serie || (d.serie.actualizado || '') > (serie.actualizado || ''))) await setAjuste('serie', d.serie);
+  if (typeof d.serie?.serie === 'string' && /^[A-Z0-9]{1,4}$/.test(d.serie.serie) && (!serie || (d.serie.actualizado || '') > (serie.actualizado || ''))) await setAjuste('serie', d.serie);
 
   if (canon(eliminados) !== canon(locElim || {})) await setAjuste('eliminados', eliminados);
   await DB.putMany({ clientes: putC, facturas: putF, presupuestos: putP });
@@ -1059,6 +1076,7 @@ async function fusionar(d, interactivo) {
 
   const html = [
     `<div class="okline">Importado: ${nC} clientes nuevos, ${aC} actualizados, ${nF} facturas nuevas, ${aF} actualizadas, ${nP} presupuestos nuevos, ${aP} actualizados.</div>`,
+    ...(descartados ? [`<div class="badline">Se han descartado ${descartados} registros que no tenían un formato válido.</div>`] : []),
     ...conflictos.map(c => `<div class="badline">La factura ${esc(c)} es distinta en la copia y en este dispositivo. Se ha mantenido la de este dispositivo.</div>`),
     ...[...repetidos].map(c => `<div class="badline">${esc(avisoRepetido(c))}</div>`),
   ].join('');
@@ -1188,10 +1206,13 @@ const Nube = (() => {
   }
   // Llamar al principio de un toque: si el permiso ha caducado, abre Google antes de que Safari pierda el toque
   const asegurarPermiso = () => (leerToken() ? Promise.resolve() : pedirToken(false));
+  // Al cerrar sesión no se deja nada en el dispositivo: los datos siguen en Google Drive
   async function cerrarSesion() {
     const t = leerToken();
     if (t && window.google?.accounts?.oauth2) google.accounts.oauth2.revoke(t, () => {});
     borrarToken();
+    hint = '';
+    await DB.vaciar();
   }
   // Sin cuenta conectada y permiso vigente no se puede usar la app
   const sesionActiva = async () => configurada() && !!leerToken() && !!(await getAjuste('nube'))?.email;

@@ -1,0 +1,4 @@
+# Nunca subir copias de seguridad: llevan DNI, direcciones y facturas reales
+*.json
+.DS_Store
+__pycache__/

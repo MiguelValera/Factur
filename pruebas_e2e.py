@@ -44,6 +44,7 @@ def dispositivo(b, U, errores, drive):
     pg = b.new_context(viewport={'width': 390, 'height': 844}, accept_downloads=True).new_page()
     pg.on('dialog', lambda d: d.accept())
     pg.on('pageerror', lambda e: errores.append(str(e)))
+    pg.on('console', lambda m: 'Content Security Policy' in m.text and errores.append('CSP: ' + m.text))
     pg.route('https://accounts.google.com/**', lambda r: r.fulfill(body=GIS, content_type='application/javascript'))
     pg.route('https://www.googleapis.com/**', drive)
     return pg
@@ -174,6 +175,30 @@ def main():
         c = [x for x in drive.datos()['clientes'] if x['nombre'] == 'Cliente Sin Sesion'][0]
         assert c.get('telefono') == '600000000', 'el cambio hecho sin sesión se guarda al volver a entrar'
         assert 'Guardado' in P.inner_text('#estado-guardado')
+
+        print('9. Una copia manipulada no puede colar código en la página')
+        malo = '<img src=x onerror="window.__xss=1">'
+        trampa = {'app': 'facturas-offline', 'formato': 1, 'eliminados': {},
+                  'clientes': [{'id': malo, 'nombre': 'Trampa', 'nif': '1', 'direccion': 'x'}],
+                  'facturas': [{'id': 'f-1', 'estado': 'emitida', 'codigo': 'X-1', 'fecha': '2026-01-01', 'emitidaEn': '2026-01-01T00:00:00Z',
+                                'lineas': [{'id': 'l1', 'concepto': 'a', 'cantidad': 1, 'precio': 1, 'iva': malo}],
+                                'totales': {'desglose': [{'tipo': malo, 'base': 1, 'cuota': 0}], 'base': 1, 'cuota': 0, 'total': 1}}],
+                  'presupuestos': [{'id': 'x" onmouseover="window.__xss=1', 'lineas': [], 'fecha': '2026-01-01', 'codigo': 'PRE'}]}
+        ruta_mala = os.path.join(tempfile.mkdtemp(), 'trampa.json'); open(ruta_mala, 'w').write(json.dumps(trampa))
+        P.goto(U + '#/ajustes'); P.wait_for_selector('#importar', state='attached')
+        P.set_input_files('#importar', ruta_mala); P.wait_for_timeout(800)
+        assert 'descartado 3 registros' in P.inner_text('#res-import'), P.inner_text('#res-import')
+        P.goto(U + '#/facturas'); P.wait_for_timeout(300); P.goto(U + '#/clientes'); P.wait_for_timeout(300)
+        assert P.evaluate('window.__xss') is None and 'Trampa' not in P.inner_text('#app')
+
+        print('10. Cerrar sesión quita los datos del dispositivo; al volver a entrar se recuperan de Drive')
+        P.goto(U + '#/ajustes'); P.wait_for_selector('#nube-salir'); P.click('#nube-salir'); P.wait_for_selector('#entrar')
+        n = P.evaluate("""new Promise(r => { const q = indexedDB.open('facturas-db'); q.onsuccess = () => {
+            const t = q.result.transaction(['clientes', 'facturas', 'presupuestos']); let n = 0, k = 3;
+            for (const s of ['clientes', 'facturas', 'presupuestos']) t.objectStore(s).count().onsuccess = e => { n += e.target.result; if (!--k) r(n); }; }; })""")
+        assert n == 0, f'quedan {n} registros en el dispositivo'
+        P.wait_for_selector('#entrar:not([disabled])'); P.click('#entrar'); P.wait_for_selector('#nube-sync')
+        P.goto(U + '#/clientes'); P.wait_for_selector('text=Cliente Sin Sesion')
 
         b.close()
     srv.shutdown()
