@@ -1,6 +1,6 @@
 # Facturas: contexto para Claude Code
 
-PWA de facturación para el taller mecánico familiar. Funciona sin conexión en iPhone, Android, Mac y Windows. Se publica con GitHub Pages desde la rama `main`, en la raíz, en https://miguelvalera.github.io/facturas/
+PWA de facturación para el taller mecánico familiar. Funciona sin conexión en iPhone, Android, Mac y Windows. Se publica con GitHub Pages desde la rama `main`, en la raíz, en https://miguelvalera.github.io/Factur/ (la ruta distingue mayúsculas: `/factur/` da 404)
 
 ## Reglas del repositorio
 - Todos los archivos van en la raíz, sin subcarpetas: el dueño a veces sube archivos desde el iPhone y GitHub no deja subir carpetas desde allí.
