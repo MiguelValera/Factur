@@ -44,7 +44,7 @@ Configuración (una sola vez, mejor desde un ordenador o con Safari en modo escr
 
 El ID de cliente no es secreto: identifica la app ante Google pero no da acceso a ningún dato.
 
-Uso: al abrir la app, "Entrar con Google". Cada cambio (cliente, factura, presupuesto) se sube a Drive en el momento; arriba se ve "Guardado ✓". El permiso de Google dura una hora: cuando caduca, la app pide volver a entrar con un toque, sin perder lo que se estaba haciendo. Antes de numerar cada factura, la app trae lo último de Drive para no repetir números entre dispositivos. El archivo en Drive se llama "Facturas - datos (no borrar).json".
+Uso: al abrir la app, "Entrar con Google". Cada cambio (cliente, factura, presupuesto) se sube a Drive en el momento; arriba se ve "Guardado ✓". El permiso de Google dura una hora: cuando caduca, la app pide volver a entrar con un toque, sin perder lo que se estaba haciendo. Antes de numerar cada factura, la app trae lo último de Drive para no repetir números entre dispositivos. El archivo en Drive se llama "Facturas - datos (no borrar).json" y está en la carpeta "FACTURAS TALLER".
 
 ## Actualizar la app
 

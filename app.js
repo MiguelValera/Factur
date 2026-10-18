@@ -1,12 +1,14 @@
 'use strict';
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 
 // Google Drive: pega aquí el ID de cliente OAuth de tu proyecto de Google Cloud (ver README).
 // No es secreto: identifica la app ante Google, pero no da acceso a ningún dato.
 const GOOGLE_CLIENT_ID = '1090950721739-uikb3jcqjfrj9qvvf0t8r8rggdltipvu.apps.googleusercontent.com';
 const NUBE_SCOPE = 'https://www.googleapis.com/auth/drive.file'; // solo ve los archivos que crea esta app
 const NUBE_NOMBRE = 'Facturas - datos (no borrar).json';
+const NUBE_CARPETA = 'FACTURAS TALLER'; // carpeta del Drive donde va el archivo de datos
+const CARPETA_MIME = 'application/vnd.google-apps.folder';
 const GAPI = 'https://www.googleapis.com';
 const FORMATO_COPIA = 'facturas-offline';
 const IVA_TIPOS = [21, 10, 4, 0];
@@ -194,6 +196,8 @@ function lineasDireccion(o) {
   const loc = [o.cp, o.poblacion].filter(Boolean).join(' ') + (o.provincia ? ` (${o.provincia})` : '');
   return [o.direccion, loc, o.pais && o.pais !== 'España' ? o.pais : ''].filter(s => s && s.trim());
 }
+// La factura lleva la forma de pago si tiene marcada la casilla (las anteriores a la casilla, siempre) y hay IBAN
+const llevaFormaPago = d => d.clase !== 'presupuesto' && d.formaPago !== false && !!d.emisor?.iban;
 const datosParte = o => [`NIF ${o.nif}`, ...lineasDireccion(o), [o.email, o.telefono].filter(Boolean).join('  ·  ')].filter(Boolean);
 const extrasValidos = ex => (ex || []).filter(x => String(x.clave || '').trim() && String(x.valor || '').trim());
 // Importe de una línea con su IVA (solo para mostrar: los totales se calculan por tipo de IVA)
@@ -250,7 +254,7 @@ function docHtml(d) {
     </table></div>
     <div class="doc-pie">
       <div class="doc-izq">
-        ${e?.iban && !esPres ? `<p class="doc-etiqueta">Forma de pago</p><p>Transferencia bancaria<br><span class="doc-gris">IBAN</span> <b>${esc(e.iban)}</b></p>` : ''}
+        ${llevaFormaPago(d) ? `<p class="doc-etiqueta">Forma de pago</p><p>Transferencia bancaria<br><span class="doc-gris">IBAN</span> <b>${esc(e.iban)}</b></p>` : ''}
         ${d.notas ? `<p class="doc-etiqueta">Notas</p><p>${esc(d.notas).replace(/\n/g, '<br>')}</p>` : ''}
       </div>
       <div class="doc-totals">
@@ -264,7 +268,7 @@ function datosDocEmitida(f, fresca = false) {
   return {
     tipo: f.tipo, codigo: f.codigo, fecha: f.fecha, fechaOperacion: f.fechaOperacion,
     emisor: f.emisorSnap, cliente: f.clienteSnap, lineas: f.lineas, totales: f.totales,
-    extras: f.extras, notas: f.notas, rectificaCodigo: f.rectificaCodigo, motivo: f.motivo, fresca,
+    extras: f.extras, notas: f.notas, rectificaCodigo: f.rectificaCodigo, motivo: f.motivo, formaPago: f.formaPago, fresca,
   };
 }
 
@@ -382,7 +386,7 @@ function pdfDocumento(d) {
   const anchoTot = 232, xTot = DER - anchoTot;
   const altoTot = 14 + filas.length * 18 + 8 + 32 + 7;
   const anchoIzq = xTot - 24 - X;
-  const iban = !esPres && e.iban;
+  const iban = llevaFormaPago(d);
   const notas = d.notas ? envolver(d.notas, 'sans', 9.5, anchoIzq) : [];
   const altoIzq = (iban ? 52 : 0) + (notas.length ? 18 + notas.length * 13 + 6 : 0);
   const altoPie = Math.max(altoTot, altoIzq);
@@ -564,14 +568,14 @@ async function vistaFactura(id, accion) {
   if (accion === 'rectificar' && f.estado === 'emitida' && f.tipo === 'F') {
     return crearBorrador({
       tipo: 'R', rectificaId: f.id, rectificaCodigo: f.codigo, clienteId: f.clienteId, extras: (f.extras || []).map(x => nuevoExtra(x.clave, x.valor)),
-      retencionTipo: numTxt(f.totales.retencionTipo || 0),
+      retencionTipo: numTxt(f.totales.retencionTipo || 0), formaPago: f.formaPago,
       lineas: f.lineas.map(l => ({ id: uuid(), concepto: l.concepto, cantidad: numTxt(-parseNum(l.cantidad)), precio: numTxt(l.precio), iva: l.iva })),
     });
   }
   if (accion === 'duplicar') {
     return crearBorrador({
       clienteId: f.clienteId, extras: (f.extras || []).map(x => nuevoExtra(x.clave, x.valor)),
-      retencionTipo: numTxt(f.totales?.retencionTipo ?? parseNum(f.retencionTipo) ?? 0), notas: f.notas || '',
+      retencionTipo: numTxt(f.totales?.retencionTipo ?? parseNum(f.retencionTipo) ?? 0), notas: f.notas || '', formaPago: f.formaPago,
       lineas: f.lineas.map(l => ({ id: uuid(), concepto: l.concepto, cantidad: numTxt(l.cantidad), precio: numTxt(l.precio), iva: l.iva })),
     });
   }
@@ -670,6 +674,10 @@ async function editorBorrador(f, esPres = false) {
       <datalist id="conceptos">${[...conocidos.keys()].map(c => `<option value="${esc(c)}">`).join('')}</datalist>
       <button type="button" id="anadir">Añadir concepto</button>
       <div><label for="notas">Notas ${esPres ? 'en el presupuesto' : 'en la factura'}</label><textarea id="notas" data-g="notas" placeholder="Por ejemplo, la causa de exención si usas IVA 0 %">${esc(f.notas)}</textarea></div>
+      ${esPres ? '' : emisor?.iban
+        ? `<label class="check"><input type="checkbox" id="forma-pago"${f.formaPago !== false ? ' checked' : ''}>
+            <span>Poner la forma de pago: transferencia a <b>${esc(emisor.iban)}</b></span></label>`
+        : `<p class="hint">Para poner la forma de pago en la factura, añade tu IBAN en <a href="#/ajustes">Ajustes</a>.</p>`}
     </form>
     <table class="doc-totals" id="totales" aria-live="polite"></table>
     ${esPres ? `
@@ -711,6 +719,7 @@ async function editorBorrador(f, esPres = false) {
   form.addEventListener('input', e => {
     const el = e.target;
     if (el.dataset.g) f[el.dataset.g] = el.value;
+    if (el.id === 'forma-pago') f.formaPago = el.checked;
     if (el.dataset.g === 'clienteId') pintarValores();
     const filaExtra = el.closest('.extra');
     if (filaExtra && el.dataset.e) f.extras.find(x => x.id === filaExtra.dataset.id)[el.dataset.e] = el.value;
@@ -968,7 +977,7 @@ async function vistaAjustes() {
 
     <h2>Cuenta de Google</h2>
     <p>Sesión iniciada con <strong>${esc(nube?.email || '')}</strong>.${nube?.ultimaSync ? ` Última sincronización: ${esc(fmtFechaHora.format(new Date(nube.ultimaSync)))}.` : ''}</p>
-    <p class="muted small">Los clientes y las facturas se guardan en el archivo «${esc(NUBE_NOMBRE)}» del Google Drive de esta cuenta, y son los mismos en todos los dispositivos que entren con ella. Los datos van directamente de este dispositivo a ese Drive, sin pasar por ningún otro sitio.</p>
+    <p class="muted small">Los clientes y las facturas se guardan en el archivo «${esc(NUBE_NOMBRE)}», dentro de la carpeta «${esc(NUBE_CARPETA)}» del Google Drive de esta cuenta, y son los mismos en todos los dispositivos que entren con ella. Los datos van directamente de este dispositivo a ese Drive, sin pasar por ningún otro sitio.</p>
     <div class="row"><button type="button" class="primary" id="nube-sync">Sincronizar ahora</button><button type="button" id="nube-salir">Cerrar sesión</button></div>
     <div id="res-nube" class="small" style="margin-top:10px"></div>
 
@@ -1272,6 +1281,31 @@ const Nube = (() => {
     cola = p;
     return p;
   }
+  // La carpeta FACTURAS TALLER: la de antes si sigue ahí, si no la busca y, si no hay, la crea.
+  // Con el permiso drive.file la app solo ve las carpetas que ha creado ella.
+  async function carpetaDatos(token, est) {
+    if (est.carpetaId) {
+      try {
+        const c = await (await api(token, `${GAPI}/drive/v3/files/${est.carpetaId}?fields=id,trashed`)).json();
+        if (!c.trashed) return c.id;
+      } catch (e) { if (e.status !== 404) throw e; }
+    }
+    const q = encodeURIComponent(`name = '${NUBE_CARPETA}' and mimeType = '${CARPETA_MIME}' and trashed = false`);
+    const l = await (await api(token, `${GAPI}/drive/v3/files?q=${q}&orderBy=createdTime&fields=files(id)&spaces=drive`)).json();
+    if (l.files?.[0]) return l.files[0].id;
+    return (await (await api(token, `${GAPI}/drive/v3/files?fields=id`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: NUBE_CARPETA, mimeType: CARPETA_MIME }),
+    })).json()).id;
+  }
+  // Mete en la carpeta el archivo de datos si aún no está (los de versiones anteriores están en la raíz del Drive)
+  async function moverACarpeta(token, id, carpetaId) {
+    const { parents = [] } = await (await api(token, `${GAPI}/drive/v3/files/${id}?fields=parents`)).json();
+    if (parents.includes(carpetaId)) return;
+    const quitar = parents.length ? `&removeParents=${parents.join(',')}` : '';
+    await api(token, `${GAPI}/drive/v3/files/${id}?addParents=${carpetaId}${quitar}&fields=id`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  }
+
   async function sincronizarUna(token) {
     if (!token) throw Object.assign(new Error('La sesión de Google ha caducado. Vuelve a entrar.'), { caducado: true });
     const est = (await getAjuste('nube')) || {};
@@ -1287,18 +1321,22 @@ const Nube = (() => {
       if (id) remoto = await (await api(token, `${GAPI}/drive/v3/files/${id}?alt=media`)).json();
     }
     const resultado = remoto ? await fusionar(remoto, false) : { cambios: 0, repetidos: [] };
+    let { carpetaId, enCarpeta } = est;
+    if (!id || enCarpeta !== id) carpetaId = await carpetaDatos(token, est); // solo la primera vez para cada archivo
+    if (id && enCarpeta !== id) { await moverACarpeta(token, id, carpetaId); enCarpeta = id; }
     const marca = ahora(); // lo cambiado después de este momento quedará pendiente para la próxima vez
     const cuerpo = JSON.stringify(await datosCopia());
     if (id) {
       await api(token, `${GAPI}/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: cuerpo });
     } else {
       const b = 'facturas' + uuid().replace(/-/g, '');
-      const meta = JSON.stringify({ name: NUBE_NOMBRE, mimeType: 'application/json' });
+      const meta = JSON.stringify({ name: NUBE_NOMBRE, mimeType: 'application/json', parents: [carpetaId] });
       const body = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${b}\r\nContent-Type: application/json\r\n\r\n${cuerpo}\r\n--${b}--`;
       id = (await (await api(token, `${GAPI}/upload/drive/v3/files?uploadType=multipart&fields=id`, {
         method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${b}` }, body })).json()).id;
+      enCarpeta = id;
     }
-    await setAjuste('nube', { ...est, fileId: id, ultimaSync: marca });
+    await setAjuste('nube', { ...est, fileId: id, carpetaId, enCarpeta, ultimaSync: marca });
     await setAjuste('ultimaCopia', marca);
     return resultado;
   }

@@ -127,6 +127,13 @@ input:focus, select:focus, textarea:focus { outline: 3px solid var(--ink); outli
   .grid.three { grid-template-columns: 2fr 1fr 1fr; }
   .span-2 { grid-column: span 2; }
 }
+/* Casilla grande, con todo el texto pulsable */
+.check {
+  display: flex; align-items: center; gap: 14px; margin: 0; padding: 14px 16px;
+  font-size: 1rem; font-weight: 500; color: var(--text);
+  border: 2px solid var(--field); border-radius: 10px; background: var(--surface); cursor: pointer;
+}
+.check input { flex: none; width: 28px; height: 28px; min-height: 0; margin: 0; padding: 0; accent-color: var(--ink); }
 .hint { font-size: .95rem; margin-top: 6px; color: var(--muted); }
 .hint.bad { color: var(--stamp); }
 fieldset { border: 0; padding: 0; margin: 0; }

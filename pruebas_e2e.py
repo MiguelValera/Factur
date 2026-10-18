@@ -22,23 +22,48 @@ def servidor():
 GIS = """window.google={accounts:{oauth2:{initTokenClient(c){return{requestAccessToken(){setTimeout(()=>c.callback({access_token:'tok',expires_in:3600}),30)}}},revoke(t,cb){cb&&cb()}}}};"""
 
 class DriveFalso:
-    """Un Google Drive en memoria. Cada instancia es una cuenta de Google distinta."""
-    def __init__(self, email='taller@example.com'): self.archivos, self.email = {}, email
-    def datos(self): return json.loads(self.archivos['F1'])
+    """Un Google Drive en memoria, con carpetas. Cada instancia es una cuenta de Google distinta."""
+    NOMBRE, CARPETA, MIME_CARPETA = 'Facturas - datos (no borrar).json', 'FACTURAS TALLER', 'application/vnd.google-apps.folder'
+    def __init__(self, email='taller@example.com'):
+        self.email, self.ficheros, self.n = email, {}, 0
+    def nuevo(self, nombre, mime, padres, contenido=''):
+        self.n += 1; id = f'D{self.n}'
+        self.ficheros[id] = {'name': nombre, 'mime': mime, 'parents': padres, 'contenido': contenido}
+        return id
+    def id_datos(self): return next(k for k, f in self.ficheros.items() if f['name'] == self.NOMBRE)
+    def datos(self): return json.loads(self.ficheros[self.id_datos()]['contenido'])
+    def carpetas(self): return [k for k, f in self.ficheros.items() if f['mime'] == self.MIME_CARPETA]
     def __call__(self, route):
+        from urllib.parse import urlparse, parse_qs
         r, u = route.request, route.request.url
         assert r.headers.get('authorization') == 'Bearer tok'
         if '/about' in u: return route.fulfill(json={'user': {'emailAddress': self.email, 'displayName': 'Taller'}})
-        m = re.search(r'/files/([^/?]+)', u)
-        if r.method == 'GET' and m and 'alt=media' in u:
-            f = self.archivos.get(m.group(1))
-            return route.fulfill(status=404, body='') if f is None else route.fulfill(body=f, content_type='application/json')
-        if r.method == 'GET': return route.fulfill(json={'files': [{'id': k} for k in self.archivos]})
-        if r.method == 'POST':
-            self.archivos['F1'] = r.post_data.split('\r\n\r\n')[2].rsplit('\r\n--', 1)[0]
-            return route.fulfill(json={'id': 'F1'})
-        if r.method == 'PATCH':
-            self.archivos[m.group(1)] = r.post_data
+        url = urlparse(u); qs = parse_qs(url.query)
+        m = re.search(r'/files/([^/?]+)', url.path)
+        if r.method == 'GET' and m:
+            f = self.ficheros.get(m.group(1))
+            if f is None: return route.fulfill(status=404, body='')
+            if qs.get('alt') == ['media']: return route.fulfill(body=f['contenido'], content_type='application/json')
+            return route.fulfill(json={'id': m.group(1), 'parents': f['parents'], 'trashed': False})
+        if r.method == 'GET':  # búsqueda: carpetas o archivo de datos
+            q = qs.get('q', [''])[0]
+            if self.MIME_CARPETA in q: res = [k for k in self.carpetas() if self.ficheros[k]['name'] in q]
+            else: res = [k for k, f in self.ficheros.items() if f['name'] == self.NOMBRE]
+            return route.fulfill(json={'files': [{'id': k} for k in res]})
+        if r.method == 'POST' and '/upload/' in u:  # archivo nuevo: metadatos + contenido
+            partes = r.post_data.split('\r\n\r\n')
+            meta = json.loads(partes[1].split('\r\n--')[0])
+            return route.fulfill(json={'id': self.nuevo(meta['name'], meta['mimeType'], meta.get('parents', ['root']), partes[2].rsplit('\r\n--', 1)[0])})
+        if r.method == 'POST':  # carpeta nueva
+            meta = json.loads(r.post_data)
+            return route.fulfill(json={'id': self.nuevo(meta['name'], meta['mimeType'], ['root'])})
+        if r.method == 'PATCH' and '/upload/' in u:
+            self.ficheros[m.group(1)]['contenido'] = r.post_data
+            return route.fulfill(json={'id': m.group(1)})
+        if r.method == 'PATCH':  # mover entre carpetas
+            f = self.ficheros[m.group(1)]
+            quitar = qs.get('removeParents', [''])[0].split(',')
+            f['parents'] = [p for p in f['parents'] if p not in quitar] + qs.get('addParents', [''])[0].split(',')
             return route.fulfill(json={'id': m.group(1)})
 
 def dispositivo(b, U, errores, drive):
@@ -129,6 +154,7 @@ def comprobar_pdf(b, pg, U):
             l.query_selector('[data-f=concepto]').fill(f'Linea {i + 1} con una descripción algo larga para que ocupe dos líneas' if i % 5 == 4 else f'Linea {i + 1}')
             l.query_selector('[data-f=precio]').fill('10')
         pg.fill('#notas', 'Garantía de tres meses en mano de obra.')
+        if n == 8: pg.uncheck('#forma-pago')  # sin forma de pago
         pg.wait_for_timeout(500); pg.click('#emitir'); pg.wait_for_selector('.stamp:not(.draft)')
         with pg.expect_download() as d: pg.click('#pdf-descargar')
         ruta = os.path.join(tmp, f'factura-{n}.pdf'); d.value.save_as(ruta)
@@ -145,7 +171,8 @@ def comprobar_pdf(b, pg, U):
         if lector:
             salida = subprocess.run([lector, ruta], check=True, capture_output=True, text=True, timeout=60).stdout
             assert int(salida.split('\n')[0]) == len(paginas), 'PDFKit lee otro número de hojas'
-            assert 'TOTAL' in salida.split('@@')[-1] and 'FORMA DE PAGO' in salida.split('@@')[-1].upper()
+            assert 'TOTAL' in salida.split('@@')[-1]
+            assert ('FORMA DE PAGO' in salida.split('@@')[-1].upper()) == (n != 8), f'factura de {n} conceptos: forma de pago mal'
     return tmp
 
 def main():
@@ -270,7 +297,17 @@ def main():
         P.wait_for_selector('#entrar:not([disabled])'); P.click('#entrar'); P.wait_for_selector('#nube-sync')
         P.goto(U + '#/clientes'); P.wait_for_selector('text=Cliente Sin Sesion')
 
-        print('11. PDF: una hoja si cabe, varias si no, y nada cortado (también leído con PDFKit de Apple)')
+        print('11. Los datos van en la carpeta FACTURAS TALLER; el archivo antiguo de la raíz se mueve allí')
+        assert len(drive.carpetas()) == 1 and drive.ficheros[drive.carpetas()[0]]['name'] == 'FACTURAS TALLER'
+        assert drive.ficheros[drive.id_datos()]['parents'] == drive.carpetas()
+        antigua = DriveFalso('antigua@example.com')
+        antigua.nuevo(DriveFalso.NOMBRE, 'application/json', ['root'], json.dumps(drive.datos()))  # como lo dejaba la v1.6
+        V = dispositivo(b, U, errores, antigua); entrar(V, U); V.wait_for_timeout(500)
+        assert len(antigua.carpetas()) == 1 and antigua.ficheros[antigua.id_datos()]['parents'] == antigua.carpetas(), antigua.ficheros
+        assert len([f for f in antigua.ficheros.values() if f['name'] == DriveFalso.NOMBRE]) == 1, 'no debe crear otro archivo'
+        V.goto(U + '#/clientes'); V.wait_for_selector('text=Cliente Prueba')
+
+        print('12. PDF: una hoja si cabe, varias si no, y nada cortado (también leído con PDFKit de Apple)')
         global CARPETA_PDF
         CARPETA_PDF = comprobar_pdf(b, P, U)
 
