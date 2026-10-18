@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 // Google Drive: pega aquí el ID de cliente OAuth de tu proyecto de Google Cloud (ver README).
 // No es secreto: identifica la app ante Google, pero no da acceso a ningún dato.
@@ -95,6 +95,7 @@ const fmtNum = new Intl.NumberFormat('es-ES', { maximumFractionDigits: 4 });
 const fmtFecha = new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'long', year: 'numeric' });
 const fmtFechaHora = new Intl.DateTimeFormat('es-ES', { dateStyle: 'medium', timeStyle: 'short' });
 const eur = cents => fmtEur.format(cents / 100);
+const fechaCorta = iso => iso ? iso.slice(0, 10).split('-').reverse().join('/') : '';
 const fecha = iso => iso ? fmtFecha.format(new Date(iso.slice(0, 10) + 'T12:00:00')) : '';
 
 function parseNum(v) {
@@ -193,15 +194,7 @@ function lineasDireccion(o) {
   const loc = [o.cp, o.poblacion].filter(Boolean).join(' ') + (o.provincia ? ` (${o.provincia})` : '');
   return [o.direccion, loc, o.pais && o.pais !== 'España' ? o.pais : ''].filter(s => s && s.trim());
 }
-function bloqueParte(titulo, o) {
-  if (!o) return `<div><h3>${titulo}</h3><p class="muted">Sin indicar</p></div>`;
-  const extra = [o.email, o.telefono].filter(Boolean).join('  ·  ');
-  return `<div><h3>${titulo}</h3>
-    <div><strong>${esc(o.nombre)}</strong></div>
-    <div>NIF ${esc(o.nif)}</div>
-    ${lineasDireccion(o).map(l => `<div>${esc(l)}</div>`).join('')}
-    ${extra ? `<div>${esc(extra)}</div>` : ''}</div>`;
-}
+const datosParte = o => [`NIF ${o.nif}`, ...lineasDireccion(o), [o.email, o.telefono].filter(Boolean).join('  ·  ')].filter(Boolean);
 const extrasValidos = ex => (ex || []).filter(x => String(x.clave || '').trim() && String(x.valor || '').trim());
 // Importe de una línea con su IVA (solo para mostrar: los totales se calculan por tipo de IVA)
 function lineaConIva(l) {
@@ -216,43 +209,54 @@ function filasTotales(t) {
     ...(t.retencion ? [[`Retención IRPF ${fmtNum.format(t.retencionTipo)} %`, '−' + eur(t.retencion)]] : []),
   ];
 }
+// Misma composición que el PDF (pdfDocumento), adaptada a la pantalla
 function docHtml(d) {
   const t = d.totales;
-  const filasIva = filasTotales(t).map(([etiqueta, valor]) =>
-    `<tr><th>${esc(etiqueta)}</th><td class="num">${esc(valor)}</td></tr>`).join('');
   const esPres = d.clase === 'presupuesto';
   const sello = esPres ? '' : d.borrador
     ? `<div class="stamp draft">Borrador</div>`
     : `<div class="stamp${d.fresca ? ' fresh' : ''}">Emitida</div>`;
   const extras = extrasValidos(d.extras);
-  return `<article class="doc has-stamp">
-    ${sello}
-    <div class="doc-head">
-      <p class="doc-title">${esPres ? 'Presupuesto' : d.tipo === 'R' ? 'Factura rectificativa' : 'Factura'}</p>
-      <div><b>Nº:</b> <strong class="doc-codigo">${esc(d.codigo || 'pendiente de emitir')}</strong></div>
-      <div><b>Fecha:</b> ${esc(fecha(d.fecha))}</div>
-      ${esPres && d.validoHasta ? `<div><b>Válido hasta:</b> ${esc(fecha(d.validoHasta))}</div>` : ''}
-      ${d.fechaOperacion && d.fechaOperacion !== d.fecha ? `<div><b>Fecha de la operación:</b> ${esc(fecha(d.fechaOperacion))}</div>` : ''}
+  const e = d.emisor, c = d.cliente;
+  const meta = [['Nº', d.codigo || 'Pendiente de emitir'], ['Fecha', fechaCorta(d.fecha)],
+    ...(esPres && d.validoHasta ? [['Válido hasta', fechaCorta(d.validoHasta)]] : []),
+    ...(d.fechaOperacion && d.fechaOperacion !== d.fecha ? [['Fecha de la operación', fechaCorta(d.fechaOperacion)]] : [])];
+  return `<article class="doc">
+    <header class="doc-cabecera">
+      <div class="doc-emisor">${e ? `<div class="doc-emisor-nombre">${esc(e.nombre)}</div>
+        ${datosParte(e).map(l => `<div>${esc(l)}</div>`).join('')}` : '<div class="doc-emisor-nombre">Faltan tus datos de facturador</div>'}</div>
+      <div class="doc-meta">
+        <p class="doc-title">${esPres ? 'Presupuesto' : d.tipo === 'R' ? 'Factura rectificativa' : 'Factura'}</p>
+        <dl>${meta.map(([k, v], i) => `<dt>${esc(k)}</dt><dd${i ? '' : ' class="doc-codigo"'}>${esc(v)}</dd>`).join('')}</dl>
+        ${sello}
+      </div>
+    </header>
+    <div class="doc-partes">
+      <div class="doc-cliente">
+        <p class="doc-etiqueta">${esPres ? 'Cliente' : 'Facturar a'}</p>
+        ${c ? `<div class="doc-cliente-nombre">${esc(c.nombre)}</div>${datosParte(c).map(l => `<div>${esc(l)}</div>`).join('')}` : '<p class="muted">Sin indicar</p>'}
+      </div>
+      ${extras.length ? `<div class="doc-extras">${extras.map(x => `<div><span class="doc-etiqueta">${esc(x.clave)}</span><strong>${esc(x.valor)}</strong></div>`).join('')}</div>` : ''}
     </div>
-    <div class="doc-parties">${bloqueParte('Emisor', d.emisor)}${bloqueParte('Cliente', d.cliente)}</div>
-    ${extras.length ? `<div class="doc-extras">${extras.map(x => `<div>${esc(x.clave)}: ${esc(x.valor)}</div>`).join('')}</div>` : ''}
-    ${d.tipo === 'R' ? `<p>Rectifica la factura <strong>${esc(d.rectificaCodigo)}</strong> (rectificación por diferencias).${d.motivo ? ` Motivo: ${esc(d.motivo)}` : ''}</p>` : ''}
+    ${d.tipo === 'R' ? `<p class="doc-rectifica">Rectifica la factura <strong>${esc(d.rectificaCodigo)}</strong> (rectificación por diferencias).${d.motivo ? ` Motivo: ${esc(d.motivo)}` : ''}</p>` : ''}
     <div class="tablewrap"><table class="doc-lineas">
       <thead><tr><th>Concepto</th><th class="num">Cant.</th><th class="num">Precio sin IVA</th><th class="num">IVA</th><th class="num">Total con IVA</th></tr></thead>
       <tbody>${d.lineas.map(l => {
-        const c = lineaConIva(l);
+        const ci = lineaConIva(l);
         return `<tr><td>${esc(l.concepto)}</td><td class="num">${fmtNum.format(parseNum(l.cantidad) || 0)}</td>
-          <td class="num">${fmtPrecio.format(parseNum(l.precio) || 0)}</td><td class="num">${esc(l.iva)} %</td>
-          <td class="num"><b>${Number.isNaN(c) ? '—' : eur(c)}</b></td></tr>`;
+          <td class="num">${fmtPrecio.format(parseNum(l.precio) || 0)}</td><td class="num doc-gris">${esc(l.iva)} %</td>
+          <td class="num"><b>${Number.isNaN(ci) ? '—' : eur(ci)}</b></td></tr>`;
       }).join('')}</tbody>
     </table></div>
     <div class="doc-pie">
-      <table class="doc-totals"><tbody>
-        ${filasIva}
-        <tr class="total"><th>Total</th><td class="num">${eur(t.total)}</td></tr>
-      </tbody></table>
-      ${d.notas ? `<p class="doc-notas">${esc(d.notas).replace(/\n/g, '<br>')}</p>` : ''}
-      ${d.emisor?.iban && !esPres ? `<p class="doc-pago"><b>Forma de pago:</b> transferencia a <u>${esc(d.emisor.iban)}</u></p>` : ''}
+      <div class="doc-izq">
+        ${e?.iban && !esPres ? `<p class="doc-etiqueta">Forma de pago</p><p>Transferencia bancaria<br><span class="doc-gris">IBAN</span> <b>${esc(e.iban)}</b></p>` : ''}
+        ${d.notas ? `<p class="doc-etiqueta">Notas</p><p>${esc(d.notas).replace(/\n/g, '<br>')}</p>` : ''}
+      </div>
+      <div class="doc-totals">
+        <table><tbody>${filasTotales(t).map(([k, v]) => `<tr><th>${esc(k)}</th><td class="num">${esc(v)}</td></tr>`).join('')}</tbody></table>
+        <div class="doc-total"><span>Total</span><span class="num">${eur(t.total)}</span></div>
+      </div>
     </div>
   </article>`;
 }
@@ -274,137 +278,148 @@ function pdfDocumento(d) {
   const pdf = new Documento();
   const esPres = d.clase === 'presupuesto';
   const titulo = esPres ? 'PRESUPUESTO' : d.tipo === 'R' ? 'FACTURA RECTIFICATIVA' : 'FACTURA';
-  const X = mm(18), DER = A4.ancho - mm(18), W = DER - X; // márgenes izquierdo y derecho
-  const ARRIBA = mm(18), ABAJO = A4.alto - mm(18);       // zona útil de cada hoja
-  const t = d.totales;
-  const parrafo = (x, y, texto, max, { fuente = 'serif', tamano = 10.5, interlinea = 14 } = {}) => {
-    const lineas = envolver(texto, fuente, tamano, max);
-    lineas.forEach((l, i) => pdf.texto(x, y + tamano * 0.8 + i * interlinea, l, { fuente, tamano }));
-    return lineas.length * interlinea; // alto ocupado
+  // Un solo color de acento (el azul de la app), texto casi negro y grises para lo secundario.
+  // Todo en Helvetica: limpia, legible y con todas las cifras del mismo ancho, así los importes cuadran.
+  const ACENTO = [0.11, 0.17, 0.35], TEXTO = 0.1, SECUNDARIO = 0.4, LINEA = 0.8, FONDO = [0.93, 0.945, 0.965];
+  const X = mm(18), DER = A4.ancho - mm(18), W = DER - X;
+  const ARRIBA = mm(16), ABAJO = A4.alto - mm(22); // zona útil; debajo va el pie de página
+  const t = d.totales, e = d.emisor || {}, cli = d.cliente;
+  const extras = extrasValidos(d.extras);
+  const etiqueta = (x, y, s, opc = {}) => pdf.texto(x, y, s, { fuente: 'sansNegrita', tamano: 7.5, espaciado: 0.8, color: SECUNDARIO, ...opc });
+  // Escribe líneas a partir de la línea base y; devuelve dónde iría la siguiente
+  const escribir = (x, y, lineas, { fuente = 'sans', tamano = 9.5, interlinea = 13, color = TEXTO, alinear } = {}) => {
+    lineas.forEach((l, i) => pdf.texto(x, y + i * interlinea, l, { fuente, tamano, color, alinear }));
+    return y + lineas.length * interlinea;
   };
+  const partir = (lineas, fuente, tamano, max) => lineas.flatMap(l => envolver(l, fuente, tamano, max));
   let y = ARRIBA;
 
-  // Título subrayado y datos del documento
-  const anchoTitulo = pdf.texto(X, y + 24, titulo, { fuente: 'serifNegrita', tamano: 26, espaciado: 1.5 });
-  pdf.linea(X, y + 32, X + anchoTitulo - 1.5, y + 32, { grosor: 2.5 });
-  y += 52;
-  const dato = (etiqueta, valor, destacado = false) => {
-    const w = pdf.texto(X, y, etiqueta, { fuente: 'serifNegrita', tamano: 11 });
-    pdf.texto(X + w + 4, y, valor, { fuente: destacado ? 'serifNegrita' : 'serif', tamano: destacado ? 13 : 11 });
-    y += 16;
-  };
-  dato('Nº:', d.codigo || 'pendiente de emitir', true);
-  dato('Fecha:', fecha(d.fecha));
-  if (esPres && d.validoHasta) dato('Válido hasta:', fecha(d.validoHasta));
-  if (d.fechaOperacion && d.fechaOperacion !== d.fecha) dato('Fecha de la operación:', fecha(d.fechaOperacion));
-
-  // Emisor y cliente, en dos columnas
-  y += 8;
-  const anchoCol = (W - mm(10)) / 2;
-  const parte = (x, nombre, o) => {
-    let yy = y;
-    pdf.texto(x, yy + 8, nombre, { fuente: 'sansNegrita', tamano: 8.5, espaciado: 1 });
-    pdf.linea(x, yy + 13, x + anchoCol, yy + 13, { grosor: 1 });
-    yy += 20;
-    if (!o) return yy + parrafo(x, yy, 'Sin indicar', anchoCol);
-    yy += parrafo(x, yy, o.nombre, anchoCol, { fuente: 'serifNegrita', tamano: 12.5, interlinea: 16 });
-    const resto = [`NIF ${o.nif}`, ...lineasDireccion(o), [o.email, o.telefono].filter(Boolean).join('  ·  ')].filter(Boolean);
-    for (const r of resto) yy += parrafo(x, yy, r, anchoCol, { interlinea: 13.5 });
-    return yy;
-  };
-  y = Math.max(parte(X, 'EMISOR', d.emisor), parte(X + anchoCol + mm(10), 'CLIENTE', d.cliente));
-
-  // Datos adicionales (matrícula…) en un recuadro
-  const extras = extrasValidos(d.extras);
-  if (extras.length) {
-    y += 14;
-    const lineas = extras.flatMap(x => envolver(`${x.clave}: ${x.valor}`, 'serifNegrita', 12.5, W - 30));
-    const alto = 20 + lineas.length * 16;
-    pdf.caja(X, y, W, alto, { grosor: 1.5, radio: 4 });
-    lineas.forEach((l, i) => pdf.texto(X + W / 2, y + 10 + 12 + i * 16, l, { fuente: 'serifNegrita', tamano: 12.5, alinear: 'centro' }));
-    y += alto;
+  // Membrete: el taller a la izquierda; tipo de documento, número y fechas a la derecha
+  const anchoMembrete = W * 0.52;
+  let yi = escribir(X, y + 15, envolver(e.nombre || '', 'sansNegrita', 15, anchoMembrete), { fuente: 'sansNegrita', tamano: 15, interlinea: 18 });
+  yi = escribir(X, yi + 1, partir(datosParte(e), 'sans', 9, anchoMembrete), { tamano: 9, interlinea: 12, color: SECUNDARIO });
+  pdf.texto(DER, y + 20, titulo, { fuente: 'sansNegrita', tamano: titulo.length > 12 ? 17 : 24, espaciado: 1.2, color: ACENTO, alinear: 'derecha' });
+  const meta = [['Nº', d.codigo || 'Pendiente de emitir'], ['Fecha', fechaCorta(d.fecha)],
+    ...(esPres && d.validoHasta ? [['Válido hasta', fechaCorta(d.validoHasta)]] : []),
+    ...(d.fechaOperacion && d.fechaOperacion !== d.fecha ? [['Fecha de la operación', fechaCorta(d.fechaOperacion)]] : [])];
+  let yd = y + 44;
+  for (const [k, v] of meta) {
+    etiqueta(DER - 175, yd, k.toUpperCase());
+    pdf.texto(DER, yd, v, { fuente: 'sansNegrita', tamano: k === 'Nº' ? 12 : 10, alinear: 'derecha', color: TEXTO });
+    yd += 17;
   }
+  y = Math.max(yi, yd) + 6;
+  pdf.linea(X, y, DER, y, { grosor: 2, color: ACENTO });
+  y += 24;
+
+  // Cliente a la izquierda; datos adicionales (matrícula…) en un recuadro a la derecha
+  const anchoExtras = 190, xExtras = DER - anchoExtras;
+  const anchoCliente = (extras.length ? xExtras - 20 : DER) - X;
+  etiqueta(X, y, esPres ? 'CLIENTE' : 'FACTURAR A', { color: ACENTO });
+  let yc = y + 18;
+  if (cli) {
+    yc = escribir(X, yc, envolver(cli.nombre, 'sansNegrita', 12, anchoCliente), { fuente: 'sansNegrita', tamano: 12, interlinea: 15 });
+    yc = escribir(X, yc + 1, partir(datosParte(cli), 'sans', 9.5, anchoCliente), { interlinea: 13 });
+  } else yc = escribir(X, yc, ['Sin indicar'], { color: SECUNDARIO });
+  if (extras.length) {
+    const filas = extras.map(x => ({ clave: x.clave.toUpperCase(), valor: envolver(x.valor, 'sansNegrita', 13, anchoExtras - 28) }));
+    const alto = 12 + filas.reduce((s, f) => s + 12 + f.valor.length * 16, 0) + 4;
+    const yb = y - 12;
+    pdf.rect(xExtras, yb, anchoExtras, alto, { borde: TEXTO, grosor: 1.5, radio: 4 });
+    let yy = yb + 12;
+    for (const f of filas) {
+      etiqueta(xExtras + 14, yy + 7, f.clave);
+      yy = escribir(xExtras + 14, yy + 23, f.valor, { fuente: 'sansNegrita', tamano: 13, interlinea: 16 }) - 16 + 4 + 12;
+    }
+    yc = Math.max(yc, yb + alto + 10);
+  }
+  y = yc + 8;
   if (d.tipo === 'R') {
-    y += 14;
-    y += parrafo(X, y, `Rectifica la factura ${d.rectificaCodigo} (rectificación por diferencias).${d.motivo ? ` Motivo: ${d.motivo}` : ''}`, W);
+    const lineas = envolver(`Rectifica la factura ${d.rectificaCodigo} (rectificación por diferencias).${d.motivo ? ` Motivo: ${d.motivo}` : ''}`, 'sans', 9.5, W - 24);
+    const alto = 14 + lineas.length * 13;
+    pdf.rect(X, y, W, alto, { relleno: FONDO, radio: 3 });
+    escribir(X + 12, y + 7 + 9, lineas);
+    y += alto + 12;
   }
 
   // Tabla de conceptos
-  const COL = { cant: DER - 250, precio: DER - 155, iva: DER - 102, total: DER - 6 }; // borde derecho de cada columna
-  const anchoConcepto = COL.cant - 45 - (X + 6);
+  const COL = { cant: DER - 245, precio: DER - 150, iva: DER - 98, total: DER - 10 }; // borde derecho de cada columna
+  const anchoConcepto = COL.cant - 40 - (X + 10);
   const cabeceraTabla = () => {
-    pdf.linea(X, y, DER, y, { grosor: 1.5 });
-    const c = { fuente: 'sansNegrita', tamano: 7.5, espaciado: 0.6 };
-    pdf.texto(X + 6, y + 14, 'CONCEPTO', c);
-    pdf.texto(COL.cant, y + 14, 'CANT.', { ...c, alinear: 'derecha' });
-    pdf.texto(COL.precio, y + 14, 'PRECIO SIN IVA', { ...c, alinear: 'derecha' });
-    pdf.texto(COL.iva, y + 14, 'IVA', { ...c, alinear: 'derecha' });
-    pdf.texto(COL.total, y + 14, 'TOTAL CON IVA', { ...c, alinear: 'derecha' });
-    y += 21;
-    pdf.linea(X, y, DER, y, { grosor: 1.5 });
+    pdf.rect(X, y, W, 22, { relleno: FONDO, radio: 3 });
+    const c = { fuente: 'sansNegrita', tamano: 7.5, espaciado: 0.6, color: ACENTO };
+    pdf.texto(X + 10, y + 14.3, 'CONCEPTO', c);
+    pdf.texto(COL.cant, y + 14.3, 'CANT.', { ...c, alinear: 'derecha' });
+    pdf.texto(COL.precio, y + 14.3, 'PRECIO SIN IVA', { ...c, alinear: 'derecha' });
+    pdf.texto(COL.iva, y + 14.3, 'IVA', { ...c, alinear: 'derecha' });
+    pdf.texto(COL.total, y + 14.3, 'TOTAL CON IVA', { ...c, alinear: 'derecha' });
+    y += 22;
   };
   const nuevaHoja = () => {
     pdf.nuevaPagina();
     y = ARRIBA;
-    pdf.texto(X, y + 9, `${titulo} ${d.codigo || ''} (continuación)`, { fuente: 'sansNegrita', tamano: 8.5, espaciado: 0.5, gris: 0.35 });
-    y += 24;
+    etiqueta(X, y + 8, `${titulo} ${d.codigo || ''}  ·  CONTINUACIÓN`, { color: ACENTO });
+    y += 22;
   };
-  y += 18;
   cabeceraTabla();
   for (const l of d.lineas) {
-    const lineas = envolver(l.concepto, 'serif', 10.5, anchoConcepto);
-    const alto = 10 + lineas.length * 13;
+    const lineas = envolver(l.concepto, 'sans', 9.5, anchoConcepto);
+    const alto = 11 + lineas.length * 12.5;
     if (y + alto > ABAJO) { nuevaHoja(); cabeceraTabla(); }
-    const base = y + 5 + 10.5 * 0.8;
-    lineas.forEach((t, i) => pdf.texto(X + 6, base + i * 13, t, { tamano: 10.5 }));
+    const base = y + 6 + 7.6;
+    escribir(X + 10, base, lineas, { interlinea: 12.5 });
     const c = lineaConIva(l);
-    pdf.texto(COL.cant, base, fmtNum.format(parseNum(l.cantidad) || 0), { tamano: 10.5, alinear: 'derecha' });
-    pdf.texto(COL.precio, base, fmtPrecio.format(parseNum(l.precio) || 0), { tamano: 10.5, alinear: 'derecha' });
-    pdf.texto(COL.iva, base, `${l.iva} %`, { tamano: 10.5, alinear: 'derecha' });
-    pdf.texto(COL.total, base, Number.isNaN(c) ? '—' : eur(c), { fuente: 'serifNegrita', tamano: 10.5, alinear: 'derecha' });
+    pdf.texto(COL.cant, base, fmtNum.format(parseNum(l.cantidad) || 0), { tamano: 9.5, alinear: 'derecha', color: TEXTO });
+    pdf.texto(COL.precio, base, fmtPrecio.format(parseNum(l.precio) || 0), { tamano: 9.5, alinear: 'derecha', color: TEXTO });
+    pdf.texto(COL.iva, base, `${l.iva} %`, { tamano: 9.5, alinear: 'derecha', color: SECUNDARIO });
+    pdf.texto(COL.total, base, Number.isNaN(c) ? '—' : eur(c), { fuente: 'sansNegrita', tamano: 9.5, alinear: 'derecha', color: TEXTO });
     y += alto;
-    pdf.linea(X, y, DER, y, { grosor: 0.5, gris: 0.6 });
+    pdf.linea(X, y, DER, y, { grosor: 0.6, color: LINEA });
   }
 
-  // Pie: notas a la izquierda, recuadro de totales a la derecha y forma de pago debajo, al final de la hoja
+  // Pie del documento, al final de la última hoja: forma de pago y notas a la izquierda, totales a la derecha
   const filas = filasTotales(t);
-  const anchoTot = 245;
-  const altoTot = 14 + filas.length * 19 + 12 + 30 + 10;
-  const anchoNotas = W - anchoTot - mm(8);
-  const lineasNotas = d.notas ? envolver(d.notas, 'serif', 10.5, anchoNotas) : [];
-  const altoNotas = lineasNotas.length ? 20 + lineasNotas.length * 14 : 0;
-  const pago = !esPres && d.emisor?.iban;
-  const altoPie = Math.max(altoTot, altoNotas) + (pago ? 30 : 0);
-  if (y + 24 + altoPie > ABAJO) nuevaHoja();
+  const anchoTot = 232, xTot = DER - anchoTot;
+  const altoTot = 14 + filas.length * 18 + 8 + 32 + 7;
+  const anchoIzq = xTot - 24 - X;
+  const iban = !esPres && e.iban;
+  const notas = d.notas ? envolver(d.notas, 'sans', 9.5, anchoIzq) : [];
+  const altoIzq = (iban ? 52 : 0) + (notas.length ? 18 + notas.length * 13 + 6 : 0);
+  const altoPie = Math.max(altoTot, altoIzq);
+  if (y + 28 + altoPie > ABAJO) nuevaHoja();
   const yPie = ABAJO - altoPie;
-  if (lineasNotas.length) {
-    pdf.texto(X, yPie + 8, 'NOTAS', { fuente: 'sansNegrita', tamano: 8.5, espaciado: 1 });
-    lineasNotas.forEach((l, i) => pdf.texto(X, yPie + 20 + 10.5 * 0.8 + i * 14, l, { tamano: 10.5 }));
+  let yIzq = yPie + 8;
+  if (iban) {
+    etiqueta(X, yIzq, 'FORMA DE PAGO', { color: ACENTO });
+    pdf.texto(X, yIzq + 16, 'Transferencia bancaria', { tamano: 9.5, color: TEXTO });
+    const w = pdf.texto(X, yIzq + 30, 'IBAN ', { tamano: 9.5, color: SECUNDARIO });
+    pdf.texto(X + w, yIzq + 30, e.iban, { fuente: 'sansNegrita', tamano: 9.5, color: TEXTO });
+    yIzq += 52;
   }
-  const xTot = DER - anchoTot;
-  pdf.caja(xTot, yPie, anchoTot, altoTot, { grosor: 1.5, radio: 4 });
+  if (notas.length) {
+    etiqueta(X, yIzq, 'NOTAS', { color: ACENTO });
+    escribir(X, yIzq + 16, notas);
+  }
+  pdf.rect(xTot, yPie, anchoTot, altoTot, { borde: TEXTO, grosor: 1.5, radio: 4 });
   let yy = yPie + 14;
-  for (const [etiqueta, valor] of filas) {
-    pdf.texto(xTot + 14, yy + 11, etiqueta, { fuente: 'serifNegrita', tamano: 11.5 });
-    pdf.texto(DER - 14, yy + 11, valor, { tamano: 11.5, alinear: 'derecha' });
-    yy += 19;
+  for (const [k, v] of filas) {
+    pdf.texto(xTot + 14, yy + 9, k, { fuente: 'sansNegrita', tamano: 9.5, color: TEXTO });
+    pdf.texto(DER - 14, yy + 9, v, { tamano: 9.5, alinear: 'derecha', color: TEXTO });
+    yy += 18;
   }
-  yy += 6;
-  pdf.linea(xTot + 14, yy, DER - 14, yy, { grosor: 1.5 });
-  yy += 6;
-  pdf.texto(xTot + 14, yy + 21, 'TOTAL', { fuente: 'serifNegrita', tamano: 18, espaciado: 0.5 });
-  pdf.texto(DER - 14, yy + 21, eur(t.total), { fuente: 'serifNegrita', tamano: 18, alinear: 'derecha' });
-  if (pago) {
-    const yPago = yPie + Math.max(altoTot, altoNotas) + 24;
-    const w = pdf.texto(X, yPago, 'Forma de pago:', { fuente: 'serifNegrita', tamano: 11 });
-    pdf.texto(X + w + 4, yPago, `transferencia a ${d.emisor.iban}`, { tamano: 11 });
-  }
+  yy += 8;
+  pdf.rect(xTot + 7, yy, anchoTot - 14, 32, { relleno: ACENTO, radio: 3 });
+  pdf.texto(xTot + 16, yy + 21, 'TOTAL', { fuente: 'sansNegrita', tamano: 13, espaciado: 1, color: 1 });
+  pdf.texto(DER - 16, yy + 21.5, eur(t.total), { fuente: 'sansNegrita', tamano: 16, alinear: 'derecha', color: 1 });
 
-  // Número de página, solo si hay más de una
+  // Pie de página en todas las hojas: quién emite y número de hoja
   const n = pdf.paginas.length;
-  if (n > 1) for (let i = 1; i <= n; i++) {
+  for (let i = 1; i <= n; i++) {
     pdf.irAPagina(i);
-    pdf.texto(A4.ancho / 2, A4.alto - mm(9), `Página ${i} de ${n}`, { fuente: 'sans', tamano: 8.5, alinear: 'centro', gris: 0.35 });
+    const yLinea = A4.alto - mm(15);
+    pdf.linea(X, yLinea, DER, yLinea, { grosor: 0.6, color: LINEA });
+    pdf.texto(X, yLinea + 13, [e.nombre, e.nif && `NIF ${e.nif}`].filter(Boolean).join('  ·  '), { tamano: 7.5, color: SECUNDARIO });
+    pdf.texto(DER, yLinea + 13, `Página ${i} de ${n}`, { tamano: 7.5, color: SECUNDARIO, alinear: 'derecha' });
   }
   return pdf.generar(`${esPres ? 'Presupuesto' : 'Factura'} ${d.codigo || ''}`);
 }

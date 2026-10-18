@@ -145,7 +145,7 @@ def comprobar_pdf(b, pg, U):
         if lector:
             salida = subprocess.run([lector, ruta], check=True, capture_output=True, text=True, timeout=60).stdout
             assert int(salida.split('\n')[0]) == len(paginas), 'PDFKit lee otro número de hojas'
-            assert 'TOTAL' in salida.split('@@')[-1] and 'Forma de pago' in salida.split('@@')[-1]
+            assert 'TOTAL' in salida.split('@@')[-1] and 'FORMA DE PAGO' in salida.split('@@')[-1].upper()
     return tmp
 
 def main():
@@ -225,7 +225,7 @@ def main():
         P.fill('.line [data-f=concepto]', 'Embrague'); P.fill('.line [data-f=precio]', '400'); P.wait_for_timeout(4500)
         pres = drive.datos()['presupuestos']
         assert len(pres) == 1 and pres[0]['lineas'][0]['concepto'] == 'Embrague', 'lo escrito se sube solo'
-        P.click('#ver'); assert 'PRESUPUESTO' in P.inner_text('#preview .doc-title').upper() and 'Válido hasta' in P.inner_text('#preview')
+        P.click('#ver'); assert 'PRESUPUESTO' in P.inner_text('#preview .doc-title').upper() and 'VÁLIDO HASTA' in P.inner_text('#preview').upper()
         P.click('#a-factura'); P.wait_for_selector('#emitir')
         assert P.input_value('.line [data-f=concepto]') == 'Embrague'
         P.click('#emitir'); P.wait_for_selector('.stamp:not(.draft)')

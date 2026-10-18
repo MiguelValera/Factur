@@ -171,56 +171,55 @@ fieldset { border: 0; padding: 0; margin: 0; }
 }
 .line label { font-size: .95rem; }
 
-/* Documento: factura en pantalla y en papel */
+/* Documento en pantalla: misma composición que el PDF (Helvetica, un color de acento) */
 .doc {
+  --doc-texto: #1A1A1A; --doc-gris: #666; --doc-linea: #CCC; --doc-fondo: #EDF0F6;
   position: relative;
-  display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--rule); border-radius: 4px;
+  background: #fff; color: var(--doc-texto); border: 1px solid var(--rule); border-radius: 4px;
   padding: 28px 22px; margin: 16px 0;
-  font-family: var(--doc); font-size: 16px; line-height: 1.5;
+  font-family: Helvetica, Arial, var(--ui); font-size: 15px; line-height: 1.45;
 }
-.doc b { font-weight: 700; }
-.doc-head { padding-right: 110px; }
-.doc-title {
-  display: inline-block; margin: 0 0 10px; padding-bottom: 4px;
-  font-size: 1.9rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
-  border-bottom: 3px solid var(--text);
-}
+.doc b, .doc strong { font-weight: 700; }
+.doc-gris { color: var(--doc-gris); }
+.doc-etiqueta { display: block; margin: 0 0 6px; font-size: .72rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #1C2B5A; }
+.doc-cabecera { display: grid; gap: 18px; grid-template-columns: 1fr; padding-bottom: 16px; border-bottom: 3px solid #1C2B5A; }
+@media (min-width: 560px) { .doc-cabecera { grid-template-columns: 1.2fr 1fr; } .doc-meta { text-align: right; } }
+.doc-emisor { color: var(--doc-gris); font-size: .9rem; }
+.doc-emisor-nombre { color: var(--doc-texto); font-size: 1.3rem; font-weight: 700; margin-bottom: 4px; }
+.doc-title { margin: 0 0 8px; font-size: 1.9rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #1C2B5A; }
+.doc-meta dl { display: grid; grid-template-columns: auto auto; justify-content: start; gap: 4px 16px; margin: 0; }
+@media (min-width: 560px) { .doc-meta dl { justify-content: end; } }
+.doc-meta dt { font-size: .72rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--doc-gris); align-self: center; }
+.doc-meta dd { margin: 0; font-weight: 700; }
 .doc-codigo { font-size: 1.1rem; }
-.doc-parties { display: grid; gap: 20px; grid-template-columns: 1fr; margin: 24px 0; }
-@media (min-width: 560px) { .doc-parties { grid-template-columns: 1fr 1fr; } }
-.doc-parties h3 {
-  font: 700 .85rem/1.2 var(--ui); text-transform: uppercase; letter-spacing: .08em; color: var(--text);
-  margin: 0 0 8px; padding-bottom: 4px; border-bottom: 1.5px solid var(--text);
-}
-.doc-parties strong { font-size: 1.08rem; }
+.doc-partes { display: grid; gap: 16px; grid-template-columns: 1fr; margin: 22px 0; align-items: start; }
+@media (min-width: 560px) { .doc-partes { grid-template-columns: 1fr 210px; } }
+.doc-cliente-nombre { font-size: 1.1rem; font-weight: 700; }
+.doc-extras { display: grid; gap: 10px; padding: 12px 16px; border: 2px solid var(--doc-texto); border-radius: 5px; }
+.doc-extras .doc-etiqueta { color: var(--doc-gris); margin-bottom: 2px; }
+.doc-extras strong { font-size: 1.2rem; }
+.doc-rectifica { padding: 10px 12px; background: var(--doc-fondo); border-radius: 4px; }
 .doc table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .doc-lineas th {
-  font: 700 .8rem/1.2 var(--ui); text-transform: uppercase; letter-spacing: .04em; color: var(--text); text-align: left;
-  border-top: 2px solid var(--text); border-bottom: 2px solid var(--text); padding: 8px 6px;
+  font-size: .7rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #1C2B5A; text-align: left;
+  background: var(--doc-fondo); padding: 8px; white-space: nowrap;
 }
-.doc-lineas td { border-bottom: 1px solid var(--rule); padding: 8px 6px; vertical-align: top; }
+.doc-lineas td { border-bottom: 1px solid var(--doc-linea); padding: 8px; vertical-align: top; }
 .doc th.num, .doc td.num { text-align: right; }
 .doc .tablewrap { overflow-x: auto; }
-/* Totales, notas, forma de pago y pie: siempre al final de la hoja */
-.doc-pie { margin-top: auto; padding-top: 24px; }
-.doc-totals {
-  margin-left: auto; width: 100%; max-width: 380px; border-collapse: separate;
-  border: 2px solid var(--text); border-radius: 4px; padding: 8px 12px;
+.doc-pie { display: grid; gap: 20px; grid-template-columns: 1fr; margin-top: 28px; align-items: end; }
+@media (min-width: 560px) { .doc-pie { grid-template-columns: 1fr 300px; } }
+.doc-izq p { margin: 0 0 14px; }
+.doc-totals { border: 2px solid var(--doc-texto); border-radius: 5px; padding: 10px 8px 8px; }
+.doc-totals th { text-align: left; font-weight: 700; padding: 4px 8px; }
+.doc-totals td { padding: 4px 8px; }
+.doc-total {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  margin-top: 8px; padding: 10px 12px; border-radius: 3px; background: #1C2B5A; color: #fff; font-weight: 700;
 }
-.doc-totals th { text-align: left; font-weight: 700; font-size: 1.05rem; padding: 5px 4px; }
-.doc-totals td { border: 0; padding: 5px 4px; font-size: 1.05rem; }
-.doc-totals tr.total th, .doc-totals tr.total td {
-  border-top: 2px solid var(--text); font-weight: 700; font-size: 1.45rem; padding: 12px 4px 6px;
-}
-.doc-notas { margin: 20px 0 0; font-style: italic; }
-.doc-pago { margin: 14px 0 0; }
+.doc-total span:first-child { letter-spacing: .08em; text-transform: uppercase; }
+.doc-total .num { font-size: 1.4rem; }
 
-.doc-extras {
-  margin: 0 0 24px; padding: 12px 16px;
-  border: 2px solid var(--text); border-radius: 4px;
-  text-align: center; font-weight: 700; font-size: 1.08rem; line-height: 1.6;
-}
 .extras { display: grid; gap: 12px; margin-bottom: 12px; }
 .extra { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; }
 .extra button { grid-column: span 2; justify-self: end; }
@@ -228,8 +227,8 @@ fieldset { border: 0; padding: 0; margin: 0; }
 
 /* El sello: lo único decorativo de la app */
 .stamp {
-  position: absolute; top: 18px; right: 18px;
-  transform: rotate(-6deg);
+  display: inline-block; margin-top: 12px;
+  transform: rotate(-4deg);
   border: 2px solid var(--stamp); color: var(--stamp);
   border-radius: 6px; padding: 4px 10px;
   font: 700 .85rem/1.2 var(--ui); letter-spacing: .04em;
@@ -238,7 +237,7 @@ fieldset { border: 0; padding: 0; margin: 0; }
 .stamp.draft { border-style: dashed; color: var(--muted); border-color: var(--muted); }
 @media (prefers-reduced-motion: no-preference) {
   .stamp.fresh { animation: stamp .35s ease-out; }
-  @keyframes stamp { from { transform: rotate(-6deg) scale(1.8); opacity: 0; } to { transform: rotate(-6deg) scale(1); opacity: .85; } }
+  @keyframes stamp { from { transform: rotate(-4deg) scale(1.8); opacity: 0; } to { transform: rotate(-4deg) scale(1); opacity: .85; } }
 }
 
 /* Avisos flotantes */

@@ -80,22 +80,25 @@ const PDF = (() => {
     return unidades.map(x => x.toString(16).padStart(4, '0')).join('');
   }).join('').toUpperCase() + '>';
 
+  // Color: un número es gris (0 negro, 1 blanco); un array [r, g, b] es color, cada valor de 0 a 1
+  const pintura = (c, trazo) => Array.isArray(c) ? `${c.map(num).join(' ')} ${trazo ? 'RG' : 'rg'}` : `${num(c)} ${trazo ? 'G' : 'g'}`;
+
   class Documento {
     constructor() { this.paginas = []; this.nuevaPagina(); }
     nuevaPagina() { this.ops = []; this.paginas.push(this.ops); return this.paginas.length; }
     irAPagina(n) { this.ops = this.paginas[n - 1]; }
-    // y es la línea base del texto, medida desde arriba
-    texto(x, y, s, { fuente = 'serif', tamano = 10, alinear = 'izquierda', espaciado = 0, gris = 0 } = {}) {
+    // y es la línea base del texto, medida desde arriba. Devuelve el ancho del texto.
+    texto(x, y, s, { fuente = 'sans', tamano = 10, alinear = 'izquierda', espaciado = 0, color = 0 } = {}) {
       const w = ancho(s, fuente, tamano, espaciado);
       const x0 = alinear === 'derecha' ? x - w : alinear === 'centro' ? x - w / 2 : x;
-      this.ops.push(`BT ${num(gris)} g /${CLAVES[fuente]} ${num(tamano)} Tf ${num(espaciado)} Tc 1 0 0 1 ${num(x0)} ${num(A4.alto - y)} Tm (${cadena(s)}) Tj ET`);
+      this.ops.push(`BT ${pintura(color)} /${CLAVES[fuente]} ${num(tamano)} Tf ${num(espaciado)} Tc 1 0 0 1 ${num(x0)} ${num(A4.alto - y)} Tm (${cadena(s)}) Tj ET`);
       return w;
     }
-    linea(x1, y1, x2, y2, { grosor = 0.5, gris = 0 } = {}) {
-      this.ops.push(`${num(gris)} G ${num(grosor)} w ${num(x1)} ${num(A4.alto - y1)} m ${num(x2)} ${num(A4.alto - y2)} l S`);
+    linea(x1, y1, x2, y2, { grosor = 0.5, color = 0 } = {}) {
+      this.ops.push(`${pintura(color, true)} ${num(grosor)} w ${num(x1)} ${num(A4.alto - y1)} m ${num(x2)} ${num(A4.alto - y2)} l S`);
     }
-    // Recuadro con esquinas redondeadas
-    caja(x, y, w, h, { grosor = 1, radio = 0, gris = 0 } = {}) {
+    // Rectángulo (y = borde superior) con esquinas redondeadas opcionales, relleno, borde o ambos
+    rect(x, y, w, h, { radio = 0, relleno = null, borde = null, grosor = 1 } = {}) {
       const r = Math.min(radio, w / 2, h / 2), k = r * 0.5523;
       const [x1, x2, y1, y2] = [x, x + w, A4.alto - y, A4.alto - y - h];
       const p = [`${num(x1 + r)} ${num(y1)} m`, `${num(x2 - r)} ${num(y1)} l`,
@@ -103,7 +106,9 @@ const PDF = (() => {
         `${num(x2)} ${num(y2 + r - k)} ${num(x2 - r + k)} ${num(y2)} ${num(x2 - r)} ${num(y2)} c`, `${num(x1 + r)} ${num(y2)} l`,
         `${num(x1 + r - k)} ${num(y2)} ${num(x1)} ${num(y2 + r - k)} ${num(x1)} ${num(y2 + r)} c`, `${num(x1)} ${num(y1 - r)} l`,
         `${num(x1)} ${num(y1 - r + k)} ${num(x1 + r - k)} ${num(y1)} ${num(x1 + r)} ${num(y1)} c`];
-      this.ops.push(`${num(gris)} G ${num(grosor)} w ${p.join(' ')} h S`);
+      const estilo = [relleno !== null ? pintura(relleno) : '', borde !== null ? `${pintura(borde, true)} ${num(grosor)} w` : ''].filter(Boolean).join(' ');
+      const pinta = relleno !== null && borde !== null ? 'B' : relleno !== null ? 'f' : 'S';
+      this.ops.push(`${estilo} ${p.join(' ')} h ${pinta}`);
     }
     // Devuelve el archivo PDF (Blob). Todo el contenido es ASCII: cada carácter es un byte.
     generar(titulo = '') {
