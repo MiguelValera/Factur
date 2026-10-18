@@ -9,6 +9,7 @@ import functools, http.server, json, os, re, socketserver, tempfile, threading
 from playwright.sync_api import sync_playwright
 
 RAIZ = os.path.dirname(os.path.abspath(__file__))
+CARPETA_IMPRESION = None
 
 def servidor():
     class Silencioso(http.server.SimpleHTTPRequestHandler):
@@ -84,6 +85,7 @@ import AppKit
 import WebKit
 let a = CommandLine.arguments
 let entrada = URL(fileURLWithPath: a[1]), salida = URL(fileURLWithPath: a[2])
+let ancho = CGFloat(Double(a[3]) ?? 800)  // ancho de la ventana: Safari maqueta según ella
 class D: NSObject, WKNavigationDelegate {
   func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -94,14 +96,14 @@ class D: NSObject, WKNavigationDelegate {
       i.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = salida
       let op = w.printOperation(with: i)
       op.showsPrintPanel = false; op.showsProgressPanel = false
-      op.view?.frame = NSRect(x: 0, y: 0, width: 800, height: 1000)
+      op.view?.frame = NSRect(x: 0, y: 0, width: ancho, height: 1000)
       op.runModal(for: NSWindow(), delegate: nil, didRun: nil, contextInfo: nil)
       DispatchQueue.main.asyncAfter(deadline: .now() + 2) { NSApp.terminate(nil) }
     }
   }
 }
 NSApplication.shared.setActivationPolicy(.prohibited)
-let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 1000))
+let web = WKWebView(frame: NSRect(x: 0, y: 0, width: ancho, height: 1000))
 let d = D(); web.navigationDelegate = d
 web.loadFileURL(entrada, allowingReadAccessTo: URL(fileURLWithPath: "/"))
 NSApplication.shared.run()
@@ -111,39 +113,60 @@ def paginas_pdf(ruta):
     return len(re.findall(rb'/Type\s*/Page(?![a-zA-Z])', open(ruta, 'rb').read()))
 
 def comprobar_paginas(b, pg, U):
-    """Una factura corta debe salir en una hoja; una larga, en varias. En Chromium y, si se puede, en WebKit."""
+    """Una factura que cabe en una hoja debe salir en una hoja, con el pie en ella; una larga, en varias.
+    Se imprime con Chromium y, si hay swiftc (Mac), con WebKit, el motor de Safari, a varios anchos de ventana."""
     import shutil, subprocess
     tmp = tempfile.mkdtemp()
     css = 'file://' + os.path.join(RAIZ, 'styles.css')
+    # Emisor con todos los datos y texto al pie, como una factura real
+    pg.goto(U + '#/ajustes'); pg.wait_for_selector('#e-nombre')
+    for campo, valor in (('cp', '00000'), ('poblacion', 'Pueblo'), ('provincia', 'Provincia'), ('email', 'correo@example.com'),
+                         ('telefono', '600000000'), ('pie', 'Texto al pie de prueba')):
+        pg.fill(f'#e-{campo}', valor)
+    pg.click('#f-emisor button[type=submit]'); pg.wait_for_timeout(300)
     def factura(n):
         pg.goto(U + '#/factura/nueva'); pg.wait_for_selector('#cliente'); pg.select_option('#cliente', index=1)
+        pg.fill('.extra [data-e=valor]', '0000TST')
         for i in range(n):
             if i: pg.click('#anadir')
             l = pg.query_selector_all('.line')[i]
             l.query_selector('[data-f=concepto]').fill(f'Linea {i + 1}'); l.query_selector('[data-f=precio]').fill('10')
         pg.wait_for_timeout(500); pg.click('#emitir'); pg.wait_for_selector('.stamp:not(.draft)')
+        pg.evaluate('window.print = () => {}')  # se usa el botón de verdad, que mide la factura, sin abrir el diálogo
+        pg.click('#imprimir')
         ruta = os.path.join(tmp, f'f{n}.html')
         open(ruta, 'w').write(f'<!doctype html><html lang="es"><head><meta charset="utf-8"><link rel="stylesheet" href="{css}"></head>'
-                              f'<body><div id="print-area">{pg.eval_on_selector("main .doc", "e => e.outerHTML")}</div></body></html>')
+                              f'<body>{pg.eval_on_selector("#print-area", "e => e.outerHTML")}</body></html>')
         return ruta
-    casos = {'corta': (factura(2), 1), 'larga': (factura(40), 2)}
+    # n.º de conceptos -> páginas esperadas (None: las que salgan en Chromium, pero ni una más en Safari)
+    casos = {nombre: (factura(n), esperado) for nombre, n, esperado in
+             (('corta', 1, 1), ('media', 8, 1), ('casi-llena', 14, None), ('larga', 40, None))}
+    for nombre, (html, esperado) in casos.items():
+        if esperado == 1: assert 'una-hoja' in open(html).read(), f'la factura {nombre} debería imprimirse en una hoja'
+    paginas_chrome = {}
     imp = b.new_page()
     for nombre, (html, esperado) in casos.items():
         imp.goto('file://' + html); imp.emulate_media(media='print')
         pdf = os.path.join(tmp, f'chrome-{nombre}.pdf'); imp.pdf(path=pdf, prefer_css_page_size=True)
-        n = paginas_pdf(pdf)
-        assert (n == 1) if esperado == 1 else (n >= 2), f'Chromium, factura {nombre}: {n} páginas'
+        paginas_chrome[nombre] = n = paginas_pdf(pdf)
+        assert n == open(html).read().count('<article class="doc'), f'Chromium, factura {nombre}: {n} páginas no coinciden con las hojas'
+        assert esperado is None or n == esperado, f'Chromium, factura {nombre}: {n} páginas'
     imp.close()
+    assert paginas_chrome['larga'] >= 2
     if not shutil.which('swiftc'):
-        print('   (sin swiftc: no se comprueba la impresión con WebKit)'); return
+        print('   (sin swiftc: no se comprueba la impresión con WebKit)'); return tmp
     src = os.path.join(tmp, 'imprimir.swift'); exe = os.path.join(tmp, 'imprimir')
     open(src, 'w').write(IMPRIMIR_WEBKIT)
     subprocess.run(['swiftc', '-O', src, '-o', exe], check=True, capture_output=True)
-    for nombre, (html, esperado) in casos.items():
-        pdf = os.path.join(tmp, f'safari-{nombre}.pdf')
-        subprocess.run([exe, html, pdf], check=True, capture_output=True, timeout=60)
-        n = paginas_pdf(pdf)
-        assert (n == 1) if esperado == 1 else (n >= 2), f'WebKit (Safari), factura {nombre}: {n} páginas'
+    for ancho in (500, 800, 1300):
+        for nombre, (html, esperado) in casos.items():
+            pdf = os.path.join(tmp, f'safari-{ancho}-{nombre}.pdf')
+            subprocess.run([exe, html, pdf, str(ancho)], check=True, capture_output=True, timeout=60)
+            n = paginas_pdf(pdf)
+            assert n == paginas_chrome[nombre], f'WebKit (Safari) a {ancho}px, factura {nombre}: {n} páginas (Chromium: {paginas_chrome[nombre]})'
+            hojas = open(html).read().count('<article class="doc')
+            assert n == hojas, f'WebKit (Safari) a {ancho}px, factura {nombre}: {n} páginas para {hojas} hojas'
+    return tmp
 
 def main():
     srv, U = servidor()
@@ -268,12 +291,14 @@ def main():
         P.goto(U + '#/clientes'); P.wait_for_selector('text=Cliente Sin Sesion')
 
         print('11. Al imprimir, una factura corta ocupa una hoja (Chromium y Safari)')
-        comprobar_paginas(b, P, U)
+        global CARPETA_IMPRESION
+        CARPETA_IMPRESION = comprobar_paginas(b, P, U)
 
         b.close()
     srv.shutdown()
     assert not errores, errores
     print('Todo correcto')
+    if CARPETA_IMPRESION: print('PDF de la prueba de impresión en', CARPETA_IMPRESION)
 
 if __name__ == '__main__':
     main()

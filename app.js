@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.4.3';
+const APP_VERSION = '1.4.4';
 
 // Google Drive: pega aquí el ID de cliente OAuth de tu proyecto de Google Cloud (ver README).
 // No es secreto: identifica la app ante Google, pero no da acceso a ningún dato.
@@ -298,8 +298,52 @@ function datosDocEmitida(f, fresca = false) {
     extras: f.extras, notas: f.notas, rectificaCodigo: f.rectificaCodigo, motivo: f.motivo, fresca,
   };
 }
+// Una hoja impresa que mida hasta esto en A4 cabe en una página en cualquier navegador.
+// El alto útil va de unos 270mm (Safari) a 297mm (Chrome): se deja holgura.
+const ALTO_HOJA_MM = 235;
+const ESCALAS_UNA_HOJA = [1, 0.95, 0.9, 0.85, 0.8]; // si no cabe, se reduce un poco antes de pasar a varias hojas
+const altoMm = el => el.getBoundingClientRect().height * 25.4 / 96;
+
+// Reparte una factura larga en hojas que caben cada una en una página. Se hace aquí y no se deja al
+// navegador porque Safari no repite márgenes ni la cabecera de la tabla en cada página.
+function repartirEnHojas(area, doc) {
+  const partes = [...doc.children];
+  const iTabla = partes.findIndex(e => e.classList.contains('tablewrap'));
+  const envoltorio = partes[iTabla], tabla = $('table', envoltorio);
+  const cabecera = $('thead', tabla), filas = $$('tbody tr', tabla), pie = $('.doc-pie', doc);
+  area.innerHTML = '';
+  const nuevaHoja = () => { const h = doc.cloneNode(false); h.removeAttribute('style'); area.append(h); return h; };
+  const nuevaTabla = h => {
+    const e = envoltorio.cloneNode(false), t = tabla.cloneNode(false), cuerpo = document.createElement('tbody');
+    t.append(cabecera.cloneNode(true), cuerpo); e.append(t); h.append(e);
+    return cuerpo;
+  };
+  let hoja = nuevaHoja();
+  partes.slice(0, iTabla).forEach(e => hoja.append(e)); // cabecera, emisor, cliente, datos adicionales
+  let cuerpo = nuevaTabla(hoja);
+  for (const fila of filas) {
+    cuerpo.append(fila);
+    if (altoMm(hoja) > ALTO_HOJA_MM && cuerpo.children.length > 1) {
+      fila.remove();
+      hoja = nuevaHoja(); cuerpo = nuevaTabla(hoja); cuerpo.append(fila);
+    }
+  }
+  hoja.append(pie);
+  if (altoMm(hoja) > ALTO_HOJA_MM) { pie.remove(); hoja = nuevaHoja(); hoja.append(pie); }
+}
+
 function imprimir(html, titulo) {
-  $('#print-area').innerHTML = html;
+  const area = $('#print-area');
+  area.innerHTML = html;
+  const doc = $('.doc', area);
+  // Se mide con el mismo navegador que va a imprimir, a tamaño A4
+  area.classList.remove('una-hoja');
+  area.classList.add('midiendo');
+  const escala = ESCALAS_UNA_HOJA.find(z => { doc.style.zoom = z; return altoMm(doc) <= ALTO_HOJA_MM; });
+  if (escala) doc.style.zoom = escala;
+  else { doc.style.zoom = ''; repartirEnHojas(area, doc); }
+  area.classList.remove('midiendo');
+  area.classList.toggle('una-hoja', !!escala);
   const anterior = document.title;
   document.title = titulo; // nombre sugerido al guardar como PDF
   window.addEventListener('afterprint', () => { document.title = anterior; }, { once: true });
