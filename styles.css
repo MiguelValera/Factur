@@ -204,15 +204,17 @@ fieldset { border: 0; padding: 0; margin: 0; }
 .doc .tablewrap { overflow-x: auto; }
 /* Totales, notas, forma de pago y pie: siempre al final de la hoja */
 .doc-pie { margin-top: auto; padding-top: 24px; }
-.doc-totals { margin-left: auto; max-width: 380px; }
-.doc-totals td { border: 0; padding: 4px 6px; }
-.doc-totals tr.total td {
-  border-top: 2px solid var(--text); border-bottom: 4px double var(--text);
-  font-weight: 700; font-size: 1.3rem; padding: 10px 6px;
+.doc-totals {
+  margin-left: auto; width: 100%; max-width: 380px; border-collapse: separate;
+  border: 2px solid var(--text); border-radius: 4px; padding: 8px 12px;
+}
+.doc-totals th { text-align: left; font-weight: 700; font-size: 1.05rem; padding: 5px 4px; }
+.doc-totals td { border: 0; padding: 5px 4px; font-size: 1.05rem; }
+.doc-totals tr.total th, .doc-totals tr.total td {
+  border-top: 2px solid var(--text); font-weight: 700; font-size: 1.45rem; padding: 12px 4px 6px;
 }
 .doc-notas { margin: 20px 0 0; font-style: italic; }
 .doc-pago { margin: 14px 0 0; }
-.doc-texto-pie { margin: 14px 0 0; padding-top: 10px; border-top: 1px solid var(--rule); font-size: .85rem; color: var(--muted); }
 
 .doc-extras {
   margin: 0 0 24px; padding: 12px 16px;
@@ -252,39 +254,6 @@ fieldset { border: 0; padding: 0; margin: 0; }
 #toast.show { opacity: 1; pointer-events: auto; }
 #toast button { margin-left: 12px; min-height: 44px; background: transparent; color: inherit; border-color: currentColor; }
 @media (min-width: 760px) { #toast { bottom: 24px; } }
-
-#print-area { display: none; }
-
-/* Hoja impresa (#print-area). Va fuera de @media print para poder medirla antes de imprimir:
-   la clase .midiendo la monta fuera de la pantalla a tamaño A4. */
-#print-area.midiendo { display: block; position: absolute; left: -10000px; top: 0; width: 210mm; visibility: hidden; }
-#print-area .doc {
-  padding: 16mm 16mm 14mm; margin: 0;
-  border: 0; border-radius: 0; font-size: 11pt; color: #000; background: #fff;
-}
-#print-area .doc-parties { grid-template-columns: 1fr 1fr; }
-#print-area .stamp { display: none; }
-#print-area .doc-head { padding-right: 0; }
-#print-area .tablewrap { overflow: visible; }
-
-@media print {
-  /* Sin márgenes de página, el navegador no imprime su cabecera ni su pie (fecha, hora, dirección web) */
-  @page { size: A4; margin: 0; }
-  html, body { background: #fff; color: #000; padding: 0; margin: 0; }
-  .topbar, .tabs, main, #toast, .modal { display: none !important; }
-  #print-area { display: block; }
-  #print-area .doc * { color: #000 !important; border-color: #000; }
-  #print-area .doc-lineas td { border-bottom-color: #999 !important; }
-  #print-area .doc-texto-pie { border-top-color: #999 !important; }
-  #print-area tr { break-inside: avoid; }
-  #print-area .doc-pie { break-inside: avoid; }
-  /* Factura que cabe en una hoja: totales y pie anclados al final de la hoja, mida lo que mida el área
-     útil en cada navegador. No usar un alto fijo (min-height): Safari deja menos alto que Chrome y la
-     factura pasaba a dos hojas. Las facturas largas no llevan esta clase: el pie va tras los conceptos. */
-  #print-area.una-hoja .doc-pie { position: fixed; left: 16mm; right: 16mm; bottom: 12mm; padding-top: 0; }
-  /* Factura larga: la app la reparte en hojas (repartirEnHojas) y cada una va en su página */
-  #print-area .doc:not(:last-child) { break-after: page; }
-}
 
 /* Pantalla de entrar con Google: sin pestañas hasta que haya sesión */
 .sin-sesion .tabs, .sin-sesion .estado { display: none; }

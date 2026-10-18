@@ -50,6 +50,10 @@ Uso: al abrir la app, "Entrar con Google". Cada cambio (cliente, factura, presup
 
 Tras cambiar código, sube también `sw.js` con `VERSION` cambiada (por ejemplo `facturas-v1.0.1`). Los dispositivos mostrarán "Hay una versión nueva" con un botón para actualizar.
 
+## Facturas en PDF
+
+La app genera el PDF ella misma, así que sale igual en cualquier dispositivo: "Abrir PDF para imprimir" lo abre en el visor (en el iPhone, en el menú de compartir) y "Descargar PDF" lo guarda.
+
 ## Aviso sobre Verifactu
 
-La app deja las facturas emitidas inalterables, usa rectificativas y encadena cada registro con una huella SHA-256 que se puede comprobar en Ajustes. Eso es la base técnica, pero **no** cubre todo el reglamento (QR de la AEAT, firma de registros, registro de eventos, declaración responsable). Revisadlo con vuestro gestor antes de la fecha obligatoria.
+La app **no** implementa Verifactu. Revisadlo con vuestro gestor antes de la fecha obligatoria.

@@ -9,7 +9,7 @@ import functools, http.server, json, os, re, socketserver, tempfile, threading
 from playwright.sync_api import sync_playwright
 
 RAIZ = os.path.dirname(os.path.abspath(__file__))
-CARPETA_IMPRESION = None
+CARPETA_PDF = None
 
 def servidor():
     class Silencioso(http.server.SimpleHTTPRequestHandler):
@@ -75,97 +75,77 @@ def emitir(pg, U, concepto, precio, matricula=''):
     pg.click('#emitir'); pg.wait_for_selector('.stamp:not(.draft)')
     return pg.inner_text('h1')
 
-def verificar(pg, U):
-    pg.goto(U + '#/ajustes'); pg.wait_for_selector('#verificar'); pg.click('#verificar'); pg.wait_for_timeout(500)
-    return pg.inner_text('#res-verif')
+def emitidas(pg, U):
+    """Números de las facturas emitidas que muestra la lista"""
+    pg.goto(U + '#/clientes'); pg.goto(U + '#/facturas'); pg.wait_for_selector('h1')
+    return [t.split(' ')[0] for t in pg.eval_on_selector_all('a.item .t:first-child', 'es => es.map(e => e.textContent.trim())')]
 
-# Imprime un HTML a PDF con WebKit, el motor de Safari (solo en un Mac con swiftc)
-IMPRIMIR_WEBKIT = r"""
-import AppKit
-import WebKit
-let a = CommandLine.arguments
-let entrada = URL(fileURLWithPath: a[1]), salida = URL(fileURLWithPath: a[2])
-let ancho = CGFloat(Double(a[3]) ?? 800)  // ancho de la ventana: Safari maqueta según ella
-class D: NSObject, WKNavigationDelegate {
-  func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-      let i = NSPrintInfo()
-      i.paperSize = NSSize(width: 595.28, height: 841.89)
-      for m in [\NSPrintInfo.topMargin, \NSPrintInfo.bottomMargin, \NSPrintInfo.leftMargin, \NSPrintInfo.rightMargin] { i[keyPath: m] = 18 }
-      i.jobDisposition = .save
-      i.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = salida
-      let op = w.printOperation(with: i)
-      op.showsPrintPanel = false; op.showsProgressPanel = false
-      op.view?.frame = NSRect(x: 0, y: 0, width: ancho, height: 1000)
-      op.runModal(for: NSWindow(), delegate: nil, didRun: nil, contextInfo: nil)
-      DispatchQueue.main.asyncAfter(deadline: .now() + 2) { NSApp.terminate(nil) }
-    }
-  }
-}
-NSApplication.shared.setActivationPolicy(.prohibited)
-let web = WKWebView(frame: NSRect(x: 0, y: 0, width: ancho, height: 1000))
-let d = D(); web.navigationDelegate = d
-web.loadFileURL(entrada, allowingReadAccessTo: URL(fileURLWithPath: "/"))
-NSApplication.shared.run()
+# Lee un PDF generado por la app con un validador de Apple (PDFKit, el de Vista Previa y Safari), si hay swiftc
+LEER_PDF_MAC = r"""
+import PDFKit
+let d = PDFDocument(url: URL(fileURLWithPath: CommandLine.arguments[1]))!
+print(d.pageCount)
+for i in 0..<d.pageCount { print("@@" + (d.page(at: i)!.string ?? "")) }
 """
 
-def paginas_pdf(ruta):
-    return len(re.findall(rb'/Type\s*/Page(?![a-zA-Z])', open(ruta, 'rb').read()))
+def analizar_pdf(ruta):
+    """Comprueba que el PDF está bien formado y devuelve sus páginas y los textos con su posición"""
+    datos = open(ruta, 'rb').read()
+    assert datos.startswith(b'%PDF-1.4') and datos.rstrip().endswith(b'%%EOF')
+    xref = int(re.search(rb'startxref\s+(\d+)', datos).group(1))
+    assert datos[xref:xref + 4] == b'xref', 'startxref no apunta a la tabla xref'
+    entradas = re.findall(rb'(\d{10}) 00000 n ', datos[xref:])
+    for k, desplazamiento in enumerate(entradas, 1):
+        assert datos[int(desplazamiento):].startswith(f'{k} 0 obj'.encode()), f'el objeto {k} no está donde dice la tabla xref'
+    paginas = []
+    for m in re.finditer(rb'stream\n(.*?)\nendstream', datos, re.S):
+        textos = [(float(x), 841.89 - float(y), t.decode('latin-1'))
+                  for x, y, t in re.findall(rb'1 0 0 1 (-?[\d.]+) (-?[\d.]+) Tm \(((?:\\.|[^\\)])*)\) Tj', m.group(1))]
+        paginas.append(textos)
+    return paginas
 
-def comprobar_paginas(b, pg, U):
-    """Una factura que cabe en una hoja debe salir en una hoja, con el pie en ella; una larga, en varias.
-    Se imprime con Chromium y, si hay swiftc (Mac), con WebKit, el motor de Safari, a varios anchos de ventana."""
+def comprobar_pdf(b, pg, U):
+    """Descarga el PDF de facturas de distintos tamaños y comprueba hojas, márgenes y que nada se corta"""
     import shutil, subprocess
     tmp = tempfile.mkdtemp()
-    css = 'file://' + os.path.join(RAIZ, 'styles.css')
-    # Emisor con todos los datos y texto al pie, como una factura real
     pg.goto(U + '#/ajustes'); pg.wait_for_selector('#e-nombre')
     for campo, valor in (('cp', '00000'), ('poblacion', 'Pueblo'), ('provincia', 'Provincia'), ('email', 'correo@example.com'),
-                         ('telefono', '600000000'), ('pie', 'Texto al pie de prueba')):
+                         ('telefono', '600000000'), ('iban', 'ES00 0000 0000 0000 0000 0000')):
         pg.fill(f'#e-{campo}', valor)
     pg.click('#f-emisor button[type=submit]'); pg.wait_for_timeout(300)
-    def factura(n):
+    lector = None
+    if shutil.which('swiftc'):
+        src, lector = os.path.join(tmp, 'leer.swift'), os.path.join(tmp, 'leer')
+        open(src, 'w').write(LEER_PDF_MAC)
+        subprocess.run(['swiftc', '-O', src, '-o', lector], check=True, capture_output=True)
+    else:
+        print('   (sin swiftc: no se lee el PDF con el validador de Apple)')
+    for n, hojas in ((1, 1), (8, 1), (11, 1), (40, None)):
         pg.goto(U + '#/factura/nueva'); pg.wait_for_selector('#cliente'); pg.select_option('#cliente', index=1)
         pg.fill('.extra [data-e=valor]', '0000TST')
         for i in range(n):
             if i: pg.click('#anadir')
             l = pg.query_selector_all('.line')[i]
-            l.query_selector('[data-f=concepto]').fill(f'Linea {i + 1}'); l.query_selector('[data-f=precio]').fill('10')
+            l.query_selector('[data-f=concepto]').fill(f'Linea {i + 1} con una descripción algo larga para que ocupe dos líneas' if i % 5 == 4 else f'Linea {i + 1}')
+            l.query_selector('[data-f=precio]').fill('10')
+        pg.fill('#notas', 'Garantía de tres meses en mano de obra.')
         pg.wait_for_timeout(500); pg.click('#emitir'); pg.wait_for_selector('.stamp:not(.draft)')
-        pg.evaluate('window.print = () => {}')  # se usa el botón de verdad, que mide la factura, sin abrir el diálogo
-        pg.click('#imprimir')
-        ruta = os.path.join(tmp, f'f{n}.html')
-        open(ruta, 'w').write(f'<!doctype html><html lang="es"><head><meta charset="utf-8"><link rel="stylesheet" href="{css}"></head>'
-                              f'<body>{pg.eval_on_selector("#print-area", "e => e.outerHTML")}</body></html>')
-        return ruta
-    # n.º de conceptos -> páginas esperadas (None: las que salgan en Chromium, pero ni una más en Safari)
-    casos = {nombre: (factura(n), esperado) for nombre, n, esperado in
-             (('corta', 1, 1), ('media', 8, 1), ('casi-llena', 14, None), ('larga', 40, None))}
-    for nombre, (html, esperado) in casos.items():
-        if esperado == 1: assert 'una-hoja' in open(html).read(), f'la factura {nombre} debería imprimirse en una hoja'
-    paginas_chrome = {}
-    imp = b.new_page()
-    for nombre, (html, esperado) in casos.items():
-        imp.goto('file://' + html); imp.emulate_media(media='print')
-        pdf = os.path.join(tmp, f'chrome-{nombre}.pdf'); imp.pdf(path=pdf, prefer_css_page_size=True)
-        paginas_chrome[nombre] = n = paginas_pdf(pdf)
-        assert n == open(html).read().count('<article class="doc'), f'Chromium, factura {nombre}: {n} páginas no coinciden con las hojas'
-        assert esperado is None or n == esperado, f'Chromium, factura {nombre}: {n} páginas'
-    imp.close()
-    assert paginas_chrome['larga'] >= 2
-    if not shutil.which('swiftc'):
-        print('   (sin swiftc: no se comprueba la impresión con WebKit)'); return tmp
-    src = os.path.join(tmp, 'imprimir.swift'); exe = os.path.join(tmp, 'imprimir')
-    open(src, 'w').write(IMPRIMIR_WEBKIT)
-    subprocess.run(['swiftc', '-O', src, '-o', exe], check=True, capture_output=True)
-    for ancho in (500, 800, 1300):
-        for nombre, (html, esperado) in casos.items():
-            pdf = os.path.join(tmp, f'safari-{ancho}-{nombre}.pdf')
-            subprocess.run([exe, html, pdf, str(ancho)], check=True, capture_output=True, timeout=60)
-            n = paginas_pdf(pdf)
-            assert n == paginas_chrome[nombre], f'WebKit (Safari) a {ancho}px, factura {nombre}: {n} páginas (Chromium: {paginas_chrome[nombre]})'
-            hojas = open(html).read().count('<article class="doc')
-            assert n == hojas, f'WebKit (Safari) a {ancho}px, factura {nombre}: {n} páginas para {hojas} hojas'
+        with pg.expect_download() as d: pg.click('#pdf-descargar')
+        ruta = os.path.join(tmp, f'factura-{n}.pdf'); d.value.save_as(ruta)
+        paginas = analizar_pdf(ruta)
+        assert hojas is None or len(paginas) == hojas, f'factura de {n} conceptos: {len(paginas)} hojas'
+        assert len(paginas) >= (2 if hojas is None else 1)
+        for i, textos in enumerate(paginas, 1):
+            for x, y, t in textos:  # nada fuera de la hoja ni pegado a los bordes: no se corta al imprimir
+                assert 40 <= x <= 560 and 40 <= y <= 830, f'factura de {n} conceptos, hoja {i}: «{t}» en ({x:.0f}, {y:.0f})'
+            if len(paginas) > 1: assert any(t == f'P\\341gina {i} de {len(paginas)}' for *_, t in textos), f'falta el número de página {i}'
+        conceptos = sum(1 for p in paginas for *_, t in p if t.startswith('Linea '))
+        assert conceptos == n, f'factura de {n} conceptos: salen {conceptos}'
+        assert [t for *_, t in paginas[-1]].count('TOTAL') == 1 and all('TOTAL' not in [t for *_, t in p] for p in paginas[:-1])
+        if lector:
+            salida = subprocess.run([lector, ruta], check=True, capture_output=True, text=True, timeout=60).stdout
+            assert int(salida.split('\n')[0]) == len(paginas), 'PDFKit lee otro número de hojas'
+            assert 'TOTAL' in salida.split('@@')[-1] and 'Forma de pago' in salida.split('@@')[-1]
     return tmp
 
 def main():
@@ -195,7 +175,7 @@ def main():
         A.click('text=Crear rectificativa'); A.wait_for_selector('#motivo'); A.fill('#motivo', 'Devolución')
         A.wait_for_timeout(500); A.click('#emitir'); A.wait_for_selector('.stamp:not(.draft)')
         assert A.inner_text('h1').startswith(f'Rectificativa FR-{anio}-0001')
-        assert '2 facturas correctas' in verificar(A, U)
+        assert sorted(emitidas(A, U)) == [f'F-{anio}-0001', f'FR-{anio}-0001']
         assert len(drive.datos()['facturas']) == 2, 'cada factura emitida se sube a Drive en el acto'
 
         print('3. Otro dispositivo con la misma cuenta: misma serie y numeración seguida')
@@ -205,8 +185,8 @@ def main():
         assert f'F-{anio}-0002' in emitir(B, U, 'Frenos', '60')
         assert f'F-{anio}-0003' in emitir(A, U, 'Aceite', '30'), 'antes de numerar se trae lo último de Drive'
         B.goto(U + '#/ajustes'); B.wait_for_selector('#nube-sync'); B.click('#nube-sync'); B.wait_for_timeout(1000)
-        v = verificar(B, U)
-        assert 'Serie F: 4 facturas correctas' in v, v
+        v = sorted(emitidas(B, U))
+        assert v == [f'F-{anio}-0001', f'F-{anio}-0002', f'F-{anio}-0003', f'FR-{anio}-0001'], v
 
         print('4. Al caducar el permiso de Google se vuelve a pedir')
         A.evaluate("localStorage.removeItem('nube-token')")
@@ -290,15 +270,15 @@ def main():
         P.wait_for_selector('#entrar:not([disabled])'); P.click('#entrar'); P.wait_for_selector('#nube-sync')
         P.goto(U + '#/clientes'); P.wait_for_selector('text=Cliente Sin Sesion')
 
-        print('11. Al imprimir, una factura corta ocupa una hoja (Chromium y Safari)')
-        global CARPETA_IMPRESION
-        CARPETA_IMPRESION = comprobar_paginas(b, P, U)
+        print('11. PDF: una hoja si cabe, varias si no, y nada cortado (también leído con PDFKit de Apple)')
+        global CARPETA_PDF
+        CARPETA_PDF = comprobar_pdf(b, P, U)
 
         b.close()
     srv.shutdown()
     assert not errores, errores
     print('Todo correcto')
-    if CARPETA_IMPRESION: print('PDF de la prueba de impresión en', CARPETA_IMPRESION)
+    if CARPETA_PDF: print('PDF de la prueba en', CARPETA_PDF)
 
 if __name__ == '__main__':
     main()

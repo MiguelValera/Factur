@@ -1,7 +1,7 @@
 // Cambia VERSION cada vez que subas cambios: así los dispositivos descargan la nueva versión.
-const VERSION = 'facturas-v1.4.4';
+const VERSION = 'facturas-v1.5.0';
 const ARCHIVOS = [
-  './', './index.html', './styles.css', './app.js', './manifest.webmanifest',
+  './', './index.html', './styles.css', './app.js', './pdf.js', './manifest.webmanifest',
   './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png',
 ];
 

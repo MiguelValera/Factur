@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.4.4';
+const APP_VERSION = '1.5.0';
 
 // Google Drive: pega aquí el ID de cliente OAuth de tu proyecto de Google Cloud (ver README).
 // No es secreto: identifica la app ante Google, pero no da acceso a ningún dato.
@@ -160,7 +160,7 @@ function calcTotales(lineas, retencionTipo = 0) {
 }
 
 /* ============================================================
-   Huella encadenada (SHA-256) de las facturas emitidas
+   Comparar datos: misma representación sea cual sea el orden de las claves
    ============================================================ */
 function canon(v) {
   if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
@@ -170,46 +170,7 @@ function canon(v) {
   }
   return JSON.stringify(v ?? null);
 }
-async function sha256(s) {
-  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
-  return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
-}
-function contenidoHash(f) {
-  return {
-    v: 1, codigo: f.codigo, serie: f.serieCodigo, anio: f.anio, numero: f.numero, tipo: f.tipo,
-    fecha: f.fecha, fechaOperacion: f.fechaOperacion || '',
-    emisor: f.emisorSnap, cliente: f.clienteSnap,
-    lineas: f.lineas.map(l => ({ concepto: l.concepto, cantidad: l.cantidad, precio: l.precio, iva: l.iva })),
-    extras: f.extras?.length ? f.extras.map(x => ({ clave: x.clave, valor: x.valor })) : undefined,
-    totales: f.totales, rectificaCodigo: f.rectificaCodigo || '', motivo: f.motivo || '', notas: f.notas || '',
-    emitidaEn: f.emitidaEn, hashAnterior: f.hashAnterior || '',
-  };
-}
-const ordenCadena = (a, b) => a.emitidaEn.localeCompare(b.emitidaEn) || a.codigo.localeCompare(b.codigo);
-
-async function verificarRegistros() {
-  const emitidas = (await DB.all('facturas')).filter(f => f.estado === 'emitida');
-  const porSerie = new Map();
-  for (const f of emitidas) { if (!porSerie.has(f.serie)) porSerie.set(f.serie, []); porSerie.get(f.serie).push(f); }
-  const resultado = [];
-  for (const [serie, lista] of [...porSerie.entries()].sort()) {
-    lista.sort(ordenCadena);
-    let prev = '';
-    const problemas = [];
-    for (const f of lista) {
-      if ((f.hashAnterior || '') !== prev) problemas.push(`${f.codigo}: no enlaza con la factura emitida antes`);
-      if (await sha256(canon(contenidoHash(f))) !== f.hash) problemas.push(`${f.codigo}: su contenido ha cambiado desde que se emitió`);
-      prev = f.hash;
-    }
-    resultado.push({ serie, total: lista.length, problemas });
-  }
-  const vistos = new Map();
-  for (const f of emitidas) {
-    if (vistos.has(f.codigo)) resultado.push({ serie: f.serie, total: 0, problemas: [`El número ${f.codigo} está repetido. Se emitieron dos facturas a la vez en dispositivos distintos.`] });
-    vistos.set(f.codigo, f.id);
-  }
-  return resultado;
-}
+const porEmision = (a, b) => (a.emitidaEn || '').localeCompare(b.emitidaEn || '') || a.codigo.localeCompare(b.codigo);
 
 /* ============================================================
    Avisos
@@ -225,7 +186,7 @@ function toast(msg, accion, alPulsar, fijo = false) {
 }
 
 /* ============================================================
-   Documento de factura (pantalla e impresión)
+   Documento de factura en pantalla (el PDF se maqueta aparte, en pdfDocumento)
    ============================================================ */
 function lineasDireccion(o) {
   if (!o) return [];
@@ -247,12 +208,18 @@ function lineaConIva(l) {
   const b = baseLinea(l);
   return Number.isNaN(b) ? NaN : b + r2(b * (Number(l.iva) || 0) / 100);
 }
+// Filas del recuadro de totales (sin el total): [etiqueta, importe]
+function filasTotales(t) {
+  const unTipo = t.desglose.length === 1;
+  return [
+    ...t.desglose.flatMap(x => [[`Base imponible${unTipo ? '' : ` al ${x.tipo} %`}`, eur(x.base)], [`IVA ${x.tipo} %`, eur(x.cuota)]]),
+    ...(t.retencion ? [[`Retención IRPF ${fmtNum.format(t.retencionTipo)} %`, '−' + eur(t.retencion)]] : []),
+  ];
+}
 function docHtml(d) {
   const t = d.totales;
-  const unTipo = t.desglose.length === 1;
-  const filasIva = t.desglose.map(x => `
-    <tr><td>Base imponible${unTipo ? '' : ` al ${esc(x.tipo)} %`}</td><td class="num">${eur(x.base)}</td></tr>
-    <tr><td>IVA ${esc(x.tipo)} %</td><td class="num">${eur(x.cuota)}</td></tr>`).join('');
+  const filasIva = filasTotales(t).map(([etiqueta, valor]) =>
+    `<tr><th>${esc(etiqueta)}</th><td class="num">${esc(valor)}</td></tr>`).join('');
   const esPres = d.clase === 'presupuesto';
   const sello = esPres ? '' : d.borrador
     ? `<div class="stamp draft">Borrador</div>`
@@ -282,12 +249,10 @@ function docHtml(d) {
     <div class="doc-pie">
       <table class="doc-totals"><tbody>
         ${filasIva}
-        ${t.retencion ? `<tr><td>Retención IRPF ${fmtNum.format(t.retencionTipo)} %</td><td class="num">−${eur(t.retencion)}</td></tr>` : ''}
-        <tr class="total"><td>Total</td><td class="num">${eur(t.total)}</td></tr>
+        <tr class="total"><th>Total</th><td class="num">${eur(t.total)}</td></tr>
       </tbody></table>
       ${d.notas ? `<p class="doc-notas">${esc(d.notas).replace(/\n/g, '<br>')}</p>` : ''}
       ${d.emisor?.iban && !esPres ? `<p class="doc-pago"><b>Forma de pago:</b> transferencia a <u>${esc(d.emisor.iban)}</u></p>` : ''}
-      ${d.emisor?.pie ? `<p class="doc-texto-pie">${esc(d.emisor.pie).replace(/\n/g, '<br>')}</p>` : ''}
     </div>
   </article>`;
 }
@@ -298,57 +263,167 @@ function datosDocEmitida(f, fresca = false) {
     extras: f.extras, notas: f.notas, rectificaCodigo: f.rectificaCodigo, motivo: f.motivo, fresca,
   };
 }
-// Una hoja impresa que mida hasta esto en A4 cabe en una página en cualquier navegador.
-// El alto útil va de unos 270mm (Safari) a 297mm (Chrome): se deja holgura.
-const ALTO_HOJA_MM = 235;
-const ESCALAS_UNA_HOJA = [1, 0.95, 0.9, 0.85, 0.8]; // si no cabe, se reduce un poco antes de pasar a varias hojas
-const altoMm = el => el.getBoundingClientRect().height * 25.4 / 96;
 
-// Reparte una factura larga en hojas que caben cada una en una página. Se hace aquí y no se deja al
-// navegador porque Safari no repite márgenes ni la cabecera de la tabla en cada página.
-function repartirEnHojas(area, doc) {
-  const partes = [...doc.children];
-  const iTabla = partes.findIndex(e => e.classList.contains('tablewrap'));
-  const envoltorio = partes[iTabla], tabla = $('table', envoltorio);
-  const cabecera = $('thead', tabla), filas = $$('tbody tr', tabla), pie = $('.doc-pie', doc);
-  area.innerHTML = '';
-  const nuevaHoja = () => { const h = doc.cloneNode(false); h.removeAttribute('style'); area.append(h); return h; };
-  const nuevaTabla = h => {
-    const e = envoltorio.cloneNode(false), t = tabla.cloneNode(false), cuerpo = document.createElement('tbody');
-    t.append(cabecera.cloneNode(true), cuerpo); e.append(t); h.append(e);
-    return cuerpo;
+/* ============================================================
+   Factura y presupuesto en PDF. Se maquetan aquí con pdf.js, en puntos exactos sobre un A4, así que
+   salen iguales en cualquier navegador y no se cortan al imprimir. Si no caben en una hoja, se reparten
+   en varias: cada una repite la cabecera de la tabla y el recuadro de totales va al pie de la última.
+   ============================================================ */
+function pdfDocumento(d) {
+  const { Documento, envolver, A4, mm } = PDF;
+  const pdf = new Documento();
+  const esPres = d.clase === 'presupuesto';
+  const titulo = esPres ? 'PRESUPUESTO' : d.tipo === 'R' ? 'FACTURA RECTIFICATIVA' : 'FACTURA';
+  const X = mm(18), DER = A4.ancho - mm(18), W = DER - X; // márgenes izquierdo y derecho
+  const ARRIBA = mm(18), ABAJO = A4.alto - mm(18);       // zona útil de cada hoja
+  const t = d.totales;
+  const parrafo = (x, y, texto, max, { fuente = 'serif', tamano = 10.5, interlinea = 14 } = {}) => {
+    const lineas = envolver(texto, fuente, tamano, max);
+    lineas.forEach((l, i) => pdf.texto(x, y + tamano * 0.8 + i * interlinea, l, { fuente, tamano }));
+    return lineas.length * interlinea; // alto ocupado
   };
-  let hoja = nuevaHoja();
-  partes.slice(0, iTabla).forEach(e => hoja.append(e)); // cabecera, emisor, cliente, datos adicionales
-  let cuerpo = nuevaTabla(hoja);
-  for (const fila of filas) {
-    cuerpo.append(fila);
-    if (altoMm(hoja) > ALTO_HOJA_MM && cuerpo.children.length > 1) {
-      fila.remove();
-      hoja = nuevaHoja(); cuerpo = nuevaTabla(hoja); cuerpo.append(fila);
-    }
+  let y = ARRIBA;
+
+  // Título subrayado y datos del documento
+  const anchoTitulo = pdf.texto(X, y + 24, titulo, { fuente: 'serifNegrita', tamano: 26, espaciado: 1.5 });
+  pdf.linea(X, y + 32, X + anchoTitulo - 1.5, y + 32, { grosor: 2.5 });
+  y += 52;
+  const dato = (etiqueta, valor, destacado = false) => {
+    const w = pdf.texto(X, y, etiqueta, { fuente: 'serifNegrita', tamano: 11 });
+    pdf.texto(X + w + 4, y, valor, { fuente: destacado ? 'serifNegrita' : 'serif', tamano: destacado ? 13 : 11 });
+    y += 16;
+  };
+  dato('Nº:', d.codigo || 'pendiente de emitir', true);
+  dato('Fecha:', fecha(d.fecha));
+  if (esPres && d.validoHasta) dato('Válido hasta:', fecha(d.validoHasta));
+  if (d.fechaOperacion && d.fechaOperacion !== d.fecha) dato('Fecha de la operación:', fecha(d.fechaOperacion));
+
+  // Emisor y cliente, en dos columnas
+  y += 8;
+  const anchoCol = (W - mm(10)) / 2;
+  const parte = (x, nombre, o) => {
+    let yy = y;
+    pdf.texto(x, yy + 8, nombre, { fuente: 'sansNegrita', tamano: 8.5, espaciado: 1 });
+    pdf.linea(x, yy + 13, x + anchoCol, yy + 13, { grosor: 1 });
+    yy += 20;
+    if (!o) return yy + parrafo(x, yy, 'Sin indicar', anchoCol);
+    yy += parrafo(x, yy, o.nombre, anchoCol, { fuente: 'serifNegrita', tamano: 12.5, interlinea: 16 });
+    const resto = [`NIF ${o.nif}`, ...lineasDireccion(o), [o.email, o.telefono].filter(Boolean).join('  ·  ')].filter(Boolean);
+    for (const r of resto) yy += parrafo(x, yy, r, anchoCol, { interlinea: 13.5 });
+    return yy;
+  };
+  y = Math.max(parte(X, 'EMISOR', d.emisor), parte(X + anchoCol + mm(10), 'CLIENTE', d.cliente));
+
+  // Datos adicionales (matrícula…) en un recuadro
+  const extras = extrasValidos(d.extras);
+  if (extras.length) {
+    y += 14;
+    const lineas = extras.flatMap(x => envolver(`${x.clave}: ${x.valor}`, 'serifNegrita', 12.5, W - 30));
+    const alto = 20 + lineas.length * 16;
+    pdf.caja(X, y, W, alto, { grosor: 1.5, radio: 4 });
+    lineas.forEach((l, i) => pdf.texto(X + W / 2, y + 10 + 12 + i * 16, l, { fuente: 'serifNegrita', tamano: 12.5, alinear: 'centro' }));
+    y += alto;
   }
-  hoja.append(pie);
-  if (altoMm(hoja) > ALTO_HOJA_MM) { pie.remove(); hoja = nuevaHoja(); hoja.append(pie); }
+  if (d.tipo === 'R') {
+    y += 14;
+    y += parrafo(X, y, `Rectifica la factura ${d.rectificaCodigo} (rectificación por diferencias).${d.motivo ? ` Motivo: ${d.motivo}` : ''}`, W);
+  }
+
+  // Tabla de conceptos
+  const COL = { cant: DER - 250, precio: DER - 155, iva: DER - 102, total: DER - 6 }; // borde derecho de cada columna
+  const anchoConcepto = COL.cant - 45 - (X + 6);
+  const cabeceraTabla = () => {
+    pdf.linea(X, y, DER, y, { grosor: 1.5 });
+    const c = { fuente: 'sansNegrita', tamano: 7.5, espaciado: 0.6 };
+    pdf.texto(X + 6, y + 14, 'CONCEPTO', c);
+    pdf.texto(COL.cant, y + 14, 'CANT.', { ...c, alinear: 'derecha' });
+    pdf.texto(COL.precio, y + 14, 'PRECIO SIN IVA', { ...c, alinear: 'derecha' });
+    pdf.texto(COL.iva, y + 14, 'IVA', { ...c, alinear: 'derecha' });
+    pdf.texto(COL.total, y + 14, 'TOTAL CON IVA', { ...c, alinear: 'derecha' });
+    y += 21;
+    pdf.linea(X, y, DER, y, { grosor: 1.5 });
+  };
+  const nuevaHoja = () => {
+    pdf.nuevaPagina();
+    y = ARRIBA;
+    pdf.texto(X, y + 9, `${titulo} ${d.codigo || ''} (continuación)`, { fuente: 'sansNegrita', tamano: 8.5, espaciado: 0.5, gris: 0.35 });
+    y += 24;
+  };
+  y += 18;
+  cabeceraTabla();
+  for (const l of d.lineas) {
+    const lineas = envolver(l.concepto, 'serif', 10.5, anchoConcepto);
+    const alto = 10 + lineas.length * 13;
+    if (y + alto > ABAJO) { nuevaHoja(); cabeceraTabla(); }
+    const base = y + 5 + 10.5 * 0.8;
+    lineas.forEach((t, i) => pdf.texto(X + 6, base + i * 13, t, { tamano: 10.5 }));
+    const c = lineaConIva(l);
+    pdf.texto(COL.cant, base, fmtNum.format(parseNum(l.cantidad) || 0), { tamano: 10.5, alinear: 'derecha' });
+    pdf.texto(COL.precio, base, fmtPrecio.format(parseNum(l.precio) || 0), { tamano: 10.5, alinear: 'derecha' });
+    pdf.texto(COL.iva, base, `${l.iva} %`, { tamano: 10.5, alinear: 'derecha' });
+    pdf.texto(COL.total, base, Number.isNaN(c) ? '—' : eur(c), { fuente: 'serifNegrita', tamano: 10.5, alinear: 'derecha' });
+    y += alto;
+    pdf.linea(X, y, DER, y, { grosor: 0.5, gris: 0.6 });
+  }
+
+  // Pie: notas a la izquierda, recuadro de totales a la derecha y forma de pago debajo, al final de la hoja
+  const filas = filasTotales(t);
+  const anchoTot = 245;
+  const altoTot = 14 + filas.length * 19 + 12 + 30 + 10;
+  const anchoNotas = W - anchoTot - mm(8);
+  const lineasNotas = d.notas ? envolver(d.notas, 'serif', 10.5, anchoNotas) : [];
+  const altoNotas = lineasNotas.length ? 20 + lineasNotas.length * 14 : 0;
+  const pago = !esPres && d.emisor?.iban;
+  const altoPie = Math.max(altoTot, altoNotas) + (pago ? 30 : 0);
+  if (y + 24 + altoPie > ABAJO) nuevaHoja();
+  const yPie = ABAJO - altoPie;
+  if (lineasNotas.length) {
+    pdf.texto(X, yPie + 8, 'NOTAS', { fuente: 'sansNegrita', tamano: 8.5, espaciado: 1 });
+    lineasNotas.forEach((l, i) => pdf.texto(X, yPie + 20 + 10.5 * 0.8 + i * 14, l, { tamano: 10.5 }));
+  }
+  const xTot = DER - anchoTot;
+  pdf.caja(xTot, yPie, anchoTot, altoTot, { grosor: 1.5, radio: 4 });
+  let yy = yPie + 14;
+  for (const [etiqueta, valor] of filas) {
+    pdf.texto(xTot + 14, yy + 11, etiqueta, { fuente: 'serifNegrita', tamano: 11.5 });
+    pdf.texto(DER - 14, yy + 11, valor, { tamano: 11.5, alinear: 'derecha' });
+    yy += 19;
+  }
+  yy += 6;
+  pdf.linea(xTot + 14, yy, DER - 14, yy, { grosor: 1.5 });
+  yy += 6;
+  pdf.texto(xTot + 14, yy + 21, 'TOTAL', { fuente: 'serifNegrita', tamano: 18, espaciado: 0.5 });
+  pdf.texto(DER - 14, yy + 21, eur(t.total), { fuente: 'serifNegrita', tamano: 18, alinear: 'derecha' });
+  if (pago) {
+    const yPago = yPie + Math.max(altoTot, altoNotas) + 24;
+    const w = pdf.texto(X, yPago, 'Forma de pago:', { fuente: 'serifNegrita', tamano: 11 });
+    pdf.texto(X + w + 4, yPago, `transferencia a ${d.emisor.iban}`, { tamano: 11 });
+  }
+
+  // Número de página, solo si hay más de una
+  const n = pdf.paginas.length;
+  if (n > 1) for (let i = 1; i <= n; i++) {
+    pdf.irAPagina(i);
+    pdf.texto(A4.ancho / 2, A4.alto - mm(9), `Página ${i} de ${n}`, { fuente: 'sans', tamano: 8.5, alinear: 'centro', gris: 0.35 });
+  }
+  return pdf.generar(`${esPres ? 'Presupuesto' : 'Factura'} ${d.codigo || ''}`);
 }
 
-function imprimir(html, titulo) {
-  const area = $('#print-area');
-  area.innerHTML = html;
-  const doc = $('.doc', area);
-  // Se mide con el mismo navegador que va a imprimir, a tamaño A4
-  area.classList.remove('una-hoja');
-  area.classList.add('midiendo');
-  const escala = ESCALAS_UNA_HOJA.find(z => { doc.style.zoom = z; return altoMm(doc) <= ALTO_HOJA_MM; });
-  if (escala) doc.style.zoom = escala;
-  else { doc.style.zoom = ''; repartirEnHojas(area, doc); }
-  area.classList.remove('midiendo');
-  area.classList.toggle('una-hoja', !!escala);
-  const anterior = document.title;
-  document.title = titulo; // nombre sugerido al guardar como PDF
-  window.addEventListener('afterprint', () => { document.title = anterior; }, { once: true });
-  window.print();
+const archivoPdf = (datos, nombre) => new File([pdfDocumento(datos)], `${nombre}.pdf`, { type: 'application/pdf' });
+// En el móvil abre el menú de compartir (imprimir, guardar en Archivos, enviar); en el ordenador, el visor de PDF
+function abrirPdf(datos, nombre) {
+  const archivo = archivoPdf(datos, nombre);
+  if (matchMedia('(pointer: coarse)').matches && navigator.canShare?.({ files: [archivo] })) {
+    navigator.share({ files: [archivo], title: nombre }).catch(e => { if (e.name !== 'AbortError') descargar(archivo); });
+    return;
+  }
+  const url = URL.createObjectURL(archivo);
+  if (!window.open(url, '_blank')) descargar(archivo);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
+const botonesPdf = `
+      <button type="button" class="primary" id="pdf-abrir">Abrir PDF para imprimir</button>
+      <button type="button" id="pdf-descargar">Descargar PDF</button>`;
 
 /* ============================================================
    Vistas
@@ -408,7 +483,7 @@ const nuevaLinea = () => ({ id: uuid(), concepto: '', cantidad: '1', precio: '',
 
 const nuevoExtra = (clave = '', valor = '') => ({ id: uuid(), clave, valor });
 async function clavesHabituales() {
-  const ultima = (await DB.all('facturas')).filter(x => x.estado === 'emitida' && x.extras?.length).sort(ordenCadena).at(-1);
+  const ultima = (await DB.all('facturas')).filter(x => x.estado === 'emitida' && x.extras?.length).sort(porEmision).at(-1);
   return ultima ? ultima.extras.map(x => nuevoExtra(x.clave)) : [nuevoExtra('Matrícula')];
 }
 async function crearBorrador(extra = {}) {
@@ -498,14 +573,15 @@ async function vistaEmitida(f) {
     <div class="head-row"><h1>${f.tipo === 'R' ? 'Rectificativa' : 'Factura'} ${esc(f.codigo)}</h1></div>
     ${html}
     <div class="row">
-      <button type="button" class="primary" id="imprimir">Imprimir o guardar PDF</button>
+      ${botonesPdf}
       ${f.tipo === 'F' ? `<a class="btn" href="#/factura/${esc(f.id)}/rectificar">Crear rectificativa</a>` : ''}
       <a class="btn" href="#/factura/${esc(f.id)}/duplicar">Duplicar como borrador</a>
     </div>
     ${rects.length ? `<h2>Rectificativas de esta factura</h2><ul class="list">${rects.map(r =>
       `<li><a class="item" href="#/factura/${esc(r.id)}"><span class="t">${esc(r.codigo || 'Sin emitir')}</span><span class="num">${r.totales ? eur(r.totales.total) : ''}</span></a></li>`).join('')}</ul>` : ''}
     <p class="muted small" style="margin-top:20px">Una factura emitida no se puede modificar. Para corregirla, crea una rectificativa.</p>`;
-  $('#imprimir').onclick = () => imprimir(docHtml(datosDocEmitida(f)), f.codigo);
+  $('#pdf-abrir').onclick = () => abrirPdf(datosDocEmitida(f), f.codigo);
+  $('#pdf-descargar').onclick = () => descargar(archivoPdf(datosDocEmitida(f), f.codigo));
 }
 
 // Editor de borradores de factura y de presupuestos (esPres). Se guarda solo mientras se escribe.
@@ -516,7 +592,7 @@ async function editorBorrador(f, esPres = false) {
 
   // Conceptos ya usados, para autocompletar precio e IVA
   const conocidos = new Map();
-  todas.filter(x => x.estado === 'emitida').sort(ordenCadena)
+  todas.filter(x => x.estado === 'emitida').sort(porEmision)
     .forEach(x => x.lineas.forEach(l => { if (l.concepto && parseNum(l.cantidad) > 0) conocidos.set(l.concepto, l); }));
 
   f.extras ||= [];
@@ -583,7 +659,7 @@ async function editorBorrador(f, esPres = false) {
     <table class="doc-totals" id="totales" aria-live="polite"></table>
     ${esPres ? `
     <div class="acciones">
-      <button type="button" class="primary" id="imprimir">Imprimir o guardar PDF</button>
+      ${botonesPdf}
       ${f.facturaId ? '' : `<button type="button" id="a-factura">Pasar a factura</button>`}
       <button type="button" id="ver">Ver cómo queda</button>
     </div>
@@ -688,11 +764,9 @@ async function editorBorrador(f, esPres = false) {
     location.hash = esPres ? '#/presupuestos' : '#/facturas';
   };
   if (esPres) {
-    $('#imprimir').onclick = async () => {
-      if (!f.clienteId) { toast('Elige un cliente antes de imprimir.'); return; }
-      await guardar();
-      imprimir(docHtml(datosDoc()), `Presupuesto ${f.codigo}`);
-    };
+    const conCliente = () => { if (!f.clienteId) toast('Elige un cliente antes de sacar el PDF.'); return !!f.clienteId; };
+    $('#pdf-abrir').onclick = () => { if (conCliente()) { guardar(); abrirPdf(datosDoc(), f.codigo); } };
+    $('#pdf-descargar').onclick = () => { if (conCliente()) { guardar(); descargar(archivoPdf(datosDoc(), f.codigo)); } };
     $('#a-factura')?.addEventListener('click', async () => {
       if (!confirm('Se creará una factura con los mismos datos. Podrás revisarla antes de emitirla. ¿Continuar?')) return;
       const facturaId = uuid();
@@ -761,21 +835,15 @@ async function emitir(f) {
   const codigo = `${serieCodigo}-${anio}-${String(numero).padStart(4, '0')}`;
   if (!confirm(`Se emitirá con el número ${codigo}. Después no podrás modificarla. ¿Emitir?`)) return null;
 
-  const cadena = emitidas.filter(x => x.serie === serie).sort(ordenCadena);
-  const anterior = cadena.at(-1);
-  // Siempre después de la anterior, aunque el reloj de este dispositivo vaya atrasado: la cadena se ordena por esta fecha
-  let emitidaEn = ahora();
-  if (anterior && emitidaEn <= anterior.emitidaEn) emitidaEn = new Date(Date.parse(anterior.emitidaEn) + 1).toISOString();
   const totales = calcTotales(lineas, ret); delete totales.valido;
   const pick = (o, ks) => Object.fromEntries(ks.map(k => [k, o[k] || '']));
   const g = {
     ...f, estado: 'emitida', serie, serieCodigo, anio, numero, codigo, lineas, extras,
     retencionTipo: ret, totales,
-    emisorSnap: pick(emisor, ['nombre', 'nif', 'direccion', 'cp', 'poblacion', 'provincia', 'email', 'telefono', 'iban', 'pie']),
+    emisorSnap: pick(emisor, ['nombre', 'nif', 'direccion', 'cp', 'poblacion', 'provincia', 'email', 'telefono', 'iban']),
     clienteSnap: pick(cliente, ['nombre', 'nif', 'direccion', 'cp', 'poblacion', 'provincia', 'pais', 'email', 'telefono']),
-    emitidaEn, hashAnterior: anterior?.hash || '',
+    emitidaEn: ahora(),
   };
-  g.hash = await sha256(canon(contenidoHash(g)));
   g.actualizado = g.emitidaEn;
   await DB.put('facturas', g);
   sessionStorage.setItem('recienEmitida', g.id);
@@ -912,7 +980,6 @@ async function vistaAjustes() {
         ${campo('provincia', 'Provincia')}
         ${campo('email', 'Email', 'type="email"')}
         ${campo('iban', 'IBAN para transferencias (opcional)', 'span-2')}
-        <div class="span-2"><label for="e-pie">Texto al pie de las facturas (opcional)</label><textarea id="e-pie" name="pie">${esc(emisor.pie)}</textarea></div>
       </div>
       <button type="submit" class="primary">Guardar datos</button>
       <p class="hint">Aparecen igual en todas las facturas nuevas. Las ya emitidas conservan los datos que tenían.</p>
@@ -925,11 +992,6 @@ async function vistaAjustes() {
       <label class="btn" style="margin:0;color:var(--text)">Importar copia<input type="file" id="importar" accept="application/json,.json" hidden></label>
     </div>
     <div id="res-import" class="small" style="margin-top:10px"></div>
-
-    <h2>Registro de facturas</h2>
-    <p class="muted small">Cada factura emitida guarda una huella que la encadena con la anterior. Si alguien alterase una factura, la comprobación lo detectaría.</p>
-    <button type="button" id="verificar">Comprobar registro</button>
-    <div id="res-verif" class="small" style="margin-top:10px"></div>
 
     <p class="muted small" style="margin-top:28px">Versión ${APP_VERSION}</p>`;
 
@@ -990,13 +1052,6 @@ async function vistaAjustes() {
     } catch (err) {
       $('#res-import').innerHTML = `<span class="badline">${esc(err.message)}</span>`;
     }
-  };
-  $('#verificar').onclick = async () => {
-    const res = await verificarRegistros();
-    if (!res.length) { $('#res-verif').textContent = 'No hay facturas emitidas.'; return; }
-    $('#res-verif').innerHTML = res.map(r => r.problemas.length
-      ? r.problemas.map(p => `<div class="badline">${esc(p)}</div>`).join('')
-      : `<div class="okline">Serie ${esc(r.serie)}: ${r.total} facturas correctas.</div>`).join('');
   };
 }
 
@@ -1083,7 +1138,7 @@ async function fusionar(d, interactivo) {
     if (!l) { putF.push(f); nF++; continue; }
     if (l.estado === 'borrador' && f.estado === 'emitida') { putF.push(f); aF++; }
     else if (l.estado === 'borrador' && f.estado === 'borrador' && (f.actualizado || '') > (l.actualizado || '')) { putF.push(f); aF++; }
-    else if (l.estado === 'emitida' && f.estado === 'emitida' && l.hash !== f.hash) conflictos.push(l.codigo);
+    else if (l.estado === 'emitida' && f.estado === 'emitida' && canon(l) !== canon(f)) conflictos.push(l.codigo);
   }
 
   for (const p of d.presupuestos || []) { // las copias de versiones anteriores no traen presupuestos
@@ -1140,7 +1195,7 @@ async function fusionar(d, interactivo) {
    Google Drive: los datos van del dispositivo al Drive del usuario, sin servidor intermedio
    ============================================================ */
 const Nube = (() => {
-  let cliente = null, esperando = null, timer = null, hint = '';
+  let cliente = null, esperando = null, timer = null, hint = '', cargandoGis = null;
   const configurada = () => !!GOOGLE_CLIENT_ID;
 
   // El permiso de Google dura una hora y se queda solo en este dispositivo
@@ -1150,12 +1205,13 @@ const Nube = (() => {
   const guardarToken = (token, seg) => { try { localStorage.setItem('nube-token', JSON.stringify({ token, expira: Date.now() + seg * 1000 })); } catch {} };
   const borrarToken = () => { try { localStorage.removeItem('nube-token'); } catch {} };
 
-  function cargarGis() {
+  function cargarGis() { // una sola vez, aunque lo pidan a la vez el arranque y la pantalla de entrar
     if (window.google?.accounts?.oauth2) return Promise.resolve();
-    return new Promise((res, rej) => {
+    return cargandoGis ||= new Promise((res, rej) => {
       const sc = document.createElement('script');
       sc.src = 'https://accounts.google.com/gsi/client'; sc.async = true;
-      sc.onload = res; sc.onerror = () => { sc.remove(); rej(new Error('No se pudo contactar con Google. ¿Hay conexión?')); };
+      sc.onload = res;
+      sc.onerror = () => { sc.remove(); cargandoGis = null; rej(new Error('No se pudo contactar con Google. ¿Hay conexión?')); };
       document.head.append(sc);
     });
   }
@@ -1428,7 +1484,7 @@ window.addEventListener('hashchange', router);
 window.addEventListener('pagehide', () => { guardarPendiente?.(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') guardarPendiente?.(); });
 
-if (!window.isSecureContext || !crypto.subtle) {
+if (!window.isSecureContext) {
   app.innerHTML = `<h1>Abre la app desde su dirección web</h1><p>Esta app necesita abrirse por https (por ejemplo, desde GitHub Pages) o desde localhost. Abriendo el archivo directamente no puede guardar datos ni funcionar sin conexión.</p>`;
 } else {
   navigator.storage?.persist?.().catch(() => {});
